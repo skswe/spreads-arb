@@ -1,0 +1,14 @@
+steps:
+- name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+  id: copy_python_dependencies
+  entrypoint: bash
+  dir: gcloud/order_book_ping
+  args:
+  - -c
+  - |
+    gsutil cp -r gs://crypto-arb-resources/repositories/crypto-mart/cryptomart cryptomart
+    gsutil cp -r gs://crypto-arb-resources/repositories/pyutil/pyutil pyutil
+    gsutil cp gs://crypto-arb-resources/artifacts/spreads-arb/cache.tar.gz cache.tar.gz
+    tar -xzf cache.tar.gz cache
+    gcloud functions deploy order_book_ping_test --runtime python39 --trigger-http --timeout=540 --max-instances=1 --memory=512 --set-env-vars DISABLE_PUSH_TO_BQ=1
+    

@@ -22,7 +22,7 @@ SKIP_EXCHANGES = set()
 # GCP variables
 GCP_PROJECT = os.getenv("GCP_PROJECT", "crypto-arb-341504")
 BQ_DATASET_NAME = os.getenv("BQ_DATASET_NAME", "{exchange}_order_book")
-
+DISABLE_PUSH_TO_BQ = os.getenv("DISABLE_PUSH_TO_BQ")
 
 def order_book_ping(request):
     dm = cryptomart.Client(debug=False)
@@ -42,8 +42,9 @@ def order_book_ping(request):
                 # Push to database
                 exchange_name = exchange.lower()
                 table_name = f"{BQ_DATASET_NAME.format(exchange=exchange_name)}.{symbol}_{instType}"
-                # order_book.to_gbq(table_name, project_id=GCP_PROJECT, if_exists="append")
-                logger.info(f"Success: #{id:<4} {exchange:<15} {symbol:<15} {instType}")
+                if not DISABLE_PUSH_TO_BQ:
+                    order_book.to_gbq(table_name, project_id=GCP_PROJECT, if_exists="append")
+                    logger.info(f"Success: #{id:<4} {exchange:<15} {symbol:<15} {instType}")
             else:
                 raise Exception("Invalid orderbook received")
 
