@@ -24,7 +24,7 @@ GCP_PROJECT = os.getenv("GCP_PROJECT", "crypto-arb-341504")
 BQ_DATASET_NAME = os.getenv("BQ_DATASET_NAME", "{exchange}_order_book")
 DISABLE_PUSH_TO_BQ = os.getenv("DISABLE_PUSH_TO_BQ")
 
-def order_book_ping(request):
+def order_book_ping_test(request):
     dm = cryptomart.Client(debug=False)
     logger = logging.getLogger("cryptomart")
     errors = []
