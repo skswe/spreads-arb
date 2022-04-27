@@ -88,7 +88,9 @@ def order_book_ping_test(request):
     logger.info("Order book completed")
     logger.info("Exceptions thrown by worker threads: ")
     for i, error in enumerate(errors):
-        logger.warning("-" * 20 + f" {i}/{len(errors)}" + "\n" + " ".join(error))
+        msg = "-" * 20 + f" {i}/{len(errors)}" + "\n" + " ".join(error)
+        msg = msg.replace("\n", " ")
+        logger.warning(msg)
 
     if len(errors) == 0:
         return "Success"
