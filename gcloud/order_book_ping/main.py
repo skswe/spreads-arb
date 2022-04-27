@@ -33,7 +33,7 @@ def order_book_ping_test(request):
         try:
             logger.info(f"Getting order book: #{id:<4} {exchange:<15} {symbol:<15} {instType}")
 
-            order_book = dm._exchange_instance_map[exchange].order_book(symbol, instType, depth=ORDER_BOOK_DEPTH)
+            order_book = dm._exchange_instance_map[exchange].order_book(symbol, instType, depth=ORDER_BOOK_DEPTH, log_level="INFO")
             if isinstance(order_book, DataFrame) and len(order_book.columns) == ORDER_BOOK_SHAPE[1]:
                 logger.info(
                     f"Order book received: #{id:<4} {exchange:<15} {symbol:<15} {instType} ... Pushing to database"
