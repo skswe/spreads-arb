@@ -13,14 +13,31 @@ steps:
   - name: "ssh"
     path: /root/.ssh
 
-- name: python
-  id: run_main_script
+- name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+  id: download_cache
   entrypoint: bash
   dir: gcloud/preload_instruments
   args:
   - -c
   - |
-    ls -ltr
+    if [[ ${_USE_CACHED} == 1 ]]
+    then 
+      echo "_USE_CACHED is set, loading previously loaded cache file from GCS"
+      gsutil cp gs://crypto-arb-resources/artifacts/spreads-arb/cache.tar.gz cache.tar.gz 
+      tar xzf cache.tar.gz cache
+      ls -ltr
+    fi
+  volumes:
+  - name: "ssh"
+    path: /root/.ssh
+
+- name: python:3.9
+  id: run_main
+  entrypoint: bash
+  dir: gcloud/preload_instruments
+  args:
+  - -c
+  - |
     pip install git+ssh://git@github.com/senderr/crypto-mart.git
     python3 main.py
   volumes:
@@ -28,7 +45,7 @@ steps:
     path: /root/.ssh
 
 - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
-  id: push_to_gcs
+  id: upload_cache
   entrypoint: bash
   dir: gcloud/preload_instruments
   args:
@@ -36,6 +53,9 @@ steps:
   - |
     tar czf cache.tar.gz cache
     gsutil cp cache.tar.gz gs://crypto-arb-resources/artifacts/spreads-arb/
+  volumes:
+  - name: "ssh"
+    path: /root/.ssh
 
 availableSecrets:
   secretManager:
@@ -43,3 +63,5 @@ availableSecrets:
     env: "SSH_KEY"
 
 timeout: 2400s
+substitutions:
+    _USE_CACHED: "0"
