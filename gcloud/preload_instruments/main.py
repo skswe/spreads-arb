@@ -16,7 +16,7 @@ def get_all_instruments(exchanges=set(cryptomart.Exchange._values())):
             exchange_inst.active_instruments.instType == cryptomart.InstrumentType.PERPETUAL
         ]
         exchange_symbols[exchange] = list(
-            zip(perpetual_instruments.symbol.to_list(), perpetual_instruments.instType.to_list())
+            zip(perpetual_instruments.contract_name.to_list(), perpetual_instruments.instType.to_list())
         )
 
     exchange_pointer = 0
@@ -41,5 +41,8 @@ def load_order_book_quantity_multiplier(id, exchange, symbol, instType):
 def run_main_script():
     with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
         executor.map(lambda args: load_order_book_quantity_multiplier(*args), get_all_instruments())
-        
+    for error in errors:
+        print(error)
+
+# get_all_instruments()
 run_main_script()
