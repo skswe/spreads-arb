@@ -7,6 +7,7 @@ N_WORKERS = 10
 client = cryptomart.Client()
 errors = []
 
+
 def get_all_instruments(exchanges=set(cryptomart.Exchange._values())):
     exchange_symbols = dict()
     symbols = []
@@ -31,18 +32,21 @@ def get_all_instruments(exchanges=set(cryptomart.Exchange._values())):
 
     return symbols
 
+
 def load_order_book_quantity_multiplier(id, exchange, symbol, instType):
     try:
-        client._exchange_instance_map[exchange]._order_book_quantity_multiplier(instType, symbol, log_level="INFO")
+        client._exchange_instance_map[exchange]._order_book_quantity_multiplier(symbol, instType, log_level="INFO")
     except Exception as e:
         tb = traceback.format_exc()
         errors.append((exchange, symbol, instType, tb))
+
 
 def run_main_script():
     with ThreadPoolExecutor(max_workers=N_WORKERS) as executor:
         executor.map(lambda args: load_order_book_quantity_multiplier(*args), get_all_instruments())
     for error in errors:
         print(error)
+
 
 # get_all_instruments()
 run_main_script()
