@@ -5,7 +5,7 @@ import cryptomart
 
 N_WORKERS = 10
 
-client = cryptomart.Client(exchange_init_kwargs={"cache_path": "cache"})
+client = cryptomart.Client(debug=True, exchange_init_kwargs={"cache_path": "cache"})
 errors = []
 
 
@@ -36,7 +36,9 @@ def get_all_instruments(exchanges=set(cryptomart.Exchange._values())):
 
 def load_order_book_quantity_multiplier(id, exchange, symbol, instType):
     try:
-        client._exchange_instance_map[exchange]._order_book_quantity_multiplier(symbol, instType, log_level="INFO")
+        client._exchange_instance_map[exchange]._order_book_quantity_multiplier(
+            symbol, instType, log_level="INFO", cache_kwargs={"path": "cache"}
+        )
     except Exception as e:
         tb = traceback.format_exc()
         errors.append((exchange, symbol, instType, tb))
