@@ -1,10 +1,11 @@
-from concurrent.futures import ThreadPoolExecutor
 import traceback
+from concurrent.futures import ThreadPoolExecutor
+
 import cryptomart
 
 N_WORKERS = 10
 
-client = cryptomart.Client()
+client = cryptomart.Client(cache_path="cache")
 errors = []
 
 
