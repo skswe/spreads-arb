@@ -5,7 +5,7 @@ import cryptomart
 
 N_WORKERS = 10
 
-client = cryptomart.Client(debug=True, exchange_init_kwargs={"cache_path": "cache"})
+client = cryptomart.Client(debug=False, exchange_init_kwargs={"cache_path": "cache"})
 errors = []
 
 
