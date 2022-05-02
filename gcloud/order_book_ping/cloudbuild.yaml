@@ -11,5 +11,5 @@ steps:
     gsutil cp gs://crypto-arb-resources/artifacts/spreads-arb/cache.tar.gz cache.tar.gz
     tar -xzf cache.tar.gz cache
     rm cache.tar.gz
-    gcloud functions deploy order_book_ping_test --runtime python39 --trigger-http --timeout=540 --max-instances=1 --memory=512 --set-env-vars DISABLE_PUSH_TO_BQ=1
+    gcloud functions deploy order_book_ping --runtime python39 --trigger-http --timeout=540 --max-instances=1 --memory=512 --set-env-vars DISABLE_PUSH_TO_BQ=0
     
