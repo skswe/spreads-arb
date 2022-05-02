@@ -51,5 +51,4 @@ def run_main_script():
         print(error)
 
 
-# get_all_instruments()
 run_main_script()
