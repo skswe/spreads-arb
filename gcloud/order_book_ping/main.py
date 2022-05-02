@@ -24,8 +24,9 @@ GCP_PROJECT = os.getenv("GCP_PROJECT", "crypto-arb-341504")
 BQ_DATASET_NAME = os.getenv("BQ_DATASET_NAME", "{exchange}_order_book")
 DISABLE_PUSH_TO_BQ = os.getenv("DISABLE_PUSH_TO_BQ")
 
+
 def order_book_ping_test(request):
-    dm = cryptomart.Client(debug=False)
+    dm = cryptomart.Client(debug=False, exchange_init_kwargs={"cache_path": "cache"})
     logger = logging.getLogger("cryptomart")
     errors = []
 
@@ -33,7 +34,9 @@ def order_book_ping_test(request):
         try:
             logger.info(f"Getting order book: #{id:<4} {exchange:<15} {symbol:<15} {instType}")
 
-            order_book = dm._exchange_instance_map[exchange].order_book(symbol, instType, depth=ORDER_BOOK_DEPTH, log_level="INFO")
+            order_book = dm._exchange_instance_map[exchange].order_book(
+                symbol, instType, depth=ORDER_BOOK_DEPTH, log_level="INFO"
+            )
             if isinstance(order_book, DataFrame) and len(order_book.columns) == ORDER_BOOK_SHAPE[1]:
                 logger.info(
                     f"Order book received: #{id:<4} {exchange:<15} {symbol:<15} {instType} ... Pushing to database"
