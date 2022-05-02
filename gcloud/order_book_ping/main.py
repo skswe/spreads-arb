@@ -25,7 +25,7 @@ BQ_DATASET_NAME = os.getenv("BQ_DATASET_NAME", "{exchange}_order_book")
 DISABLE_PUSH_TO_BQ = os.getenv("DISABLE_PUSH_TO_BQ")
 
 
-def order_book_ping_t(request):
+def order_book_ping_test(request):
     dm = cryptomart.Client(debug=False, exchange_init_kwargs={"cache_path": "cache"})
     logger = logging.getLogger("cryptomart")
     errors = []
