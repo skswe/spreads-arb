@@ -37,7 +37,7 @@ def get_all_instruments(exchanges=set(cryptomart.Exchange._values())):
 def load_order_book_quantity_multiplier(id, exchange, symbol, instType):
     try:
         client._exchange_instance_map[exchange]._order_book_quantity_multiplier(
-            symbol, instType, log_level="INFO", cache_kwargs={"path": "cache"}
+            symbol, instType, log_level="INFO", cache_kwargs={"path": "cache/order_book_multiplier"}
         )
     except Exception as e:
         tb = traceback.format_exc()
