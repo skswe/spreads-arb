@@ -30,30 +30,30 @@ def order_book_ping(request):
     logger = logging.getLogger("cryptomart")
     errors = []
 
-    def get_order_book(id, exchange, symbol, instType):
+    def get_order_book(id, exchange, symbol, inst_type):
         try:
-            logger.info(f"Getting order book: #{id:<4} {exchange:<15} {symbol:<15} {instType}")
+            logger.info(f"Getting order book: #{id:<4} {exchange:<15} {symbol:<15} {inst_type}")
 
             order_book = dm._exchange_instance_map[exchange].order_book(
-                symbol, instType, depth=ORDER_BOOK_DEPTH, log_level="INFO"
+                symbol, inst_type, depth=ORDER_BOOK_DEPTH, log_level="INFO"
             )
             if isinstance(order_book, DataFrame) and len(order_book.columns) == ORDER_BOOK_SHAPE[1]:
                 logger.info(
-                    f"Order book received: #{id:<4} {exchange:<15} {symbol:<15} {instType} ... Pushing to database"
+                    f"Order book received: #{id:<4} {exchange:<15} {symbol:<15} {inst_type} ... Pushing to database"
                 )
 
                 # Push to database
                 exchange_name = exchange.lower()
-                table_name = f"{BQ_DATASET_NAME.format(exchange=exchange_name)}.{symbol}_{instType}"
+                table_name = f"{BQ_DATASET_NAME.format(exchange=exchange_name)}.{symbol}_{inst_type}"
                 if not int(DISABLE_PUSH_TO_BQ):
                     order_book.to_gbq(table_name, project_id=GCP_PROJECT, if_exists="append")
-                    logger.info(f"Success: #{id:<4} {exchange:<15} {symbol:<15} {instType}")
+                    logger.info(f"Success: #{id:<4} {exchange:<15} {symbol:<15} {inst_type}")
             else:
                 raise Exception("Invalid orderbook received")
 
         except Exception as e:
             tb = traceback.format_exc()
-            errors.append((exchange, symbol, instType, tb))
+            errors.append((exchange, symbol, inst_type, tb))
 
     def get_all_instruments(exchanges=set(cryptomart.Exchange._values()) - SKIP_EXCHANGES):
         exchange_symbols = dict()
@@ -61,11 +61,11 @@ def order_book_ping(request):
         for exchange in exchanges:
             exchange_inst = dm._exchange_instance_map[exchange]
             perpetual_instruments = exchange_inst.active_instruments[
-                exchange_inst.active_instruments.instType == cryptomart.InstrumentType.PERPETUAL
+                exchange_inst.active_instruments.inst_type == cryptomart.InstrumentType.PERPETUAL
             ]
             filtered_symbols = perpetual_instruments[~isin(perpetual_instruments.symbol, SKIP_SYMBOLS)]
             exchange_symbols[exchange] = list(
-                zip(filtered_symbols.symbol.to_list(), filtered_symbols.instType.to_list())
+                zip(filtered_symbols.symbol.to_list(), filtered_symbols.inst_type.to_list())
             )
 
         exchange_pointer = 0

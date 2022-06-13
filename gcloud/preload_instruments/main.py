@@ -15,10 +15,10 @@ def get_all_instruments(exchanges=set(cryptomart.Exchange._values())):
     for exchange in exchanges:
         exchange_inst = client._exchange_instance_map[exchange]
         perpetual_instruments = exchange_inst.active_instruments[
-            exchange_inst.active_instruments.instType == cryptomart.InstrumentType.PERPETUAL
+            exchange_inst.active_instruments.inst_type == cryptomart.InstrumentType.PERPETUAL
         ]
         exchange_symbols[exchange] = list(
-            zip(perpetual_instruments.contract_name.to_list(), perpetual_instruments.instType.to_list())
+            zip(perpetual_instruments.contract_name.to_list(), perpetual_instruments.inst_type.to_list())
         )
 
     exchange_pointer = 0
@@ -34,14 +34,14 @@ def get_all_instruments(exchanges=set(cryptomart.Exchange._values())):
     return symbols
 
 
-def load_order_book_quantity_multiplier(id, exchange, symbol, instType):
+def load_order_book_quantity_multiplier(id, exchange, symbol, inst_type):
     try:
         client._exchange_instance_map[exchange]._order_book_quantity_multiplier(
-            symbol, instType, cache_kwargs={"path": "cache/order_book_multiplier", "log_level": "INFO"}
+            symbol, inst_type, cache_kwargs={"path": "cache/order_book_multiplier", "log_level": "INFO"}
         )
     except Exception as e:
         tb = traceback.format_exc()
-        errors.append((exchange, symbol, instType, tb))
+        errors.append((exchange, symbol, inst_type, tb))
 
 
 def run_main_script():

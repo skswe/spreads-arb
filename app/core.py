@@ -34,7 +34,7 @@ def spread_details(spreads: List[Spread]):
             "exchange_a": map(lambda e: e.ohlcv_a.exchange_name, spreads),
             "exchange_b": map(lambda e: e.ohlcv_b.exchange_name, spreads),
             "symbol": map(lambda e: e.ohlcv_b.symbol, spreads),
-            "instType": map(lambda e: e.ohlcv_a.instType, spreads),
+            "inst_type": map(lambda e: e.ohlcv_a.inst_type, spreads),
             "volatility": map(lambda e: e.volatility, spreads),
             "missing_rows": map(lambda e: len(e.missing_rows), spreads),
             "total_rows": map(lambda e: len(e), spreads),
@@ -42,7 +42,7 @@ def spread_details(spreads: List[Spread]):
             "latest_time": map(lambda e: e.latest_time, spreads),
             "gaps": map(lambda e: e.gaps, spreads),
             "alias": map(
-                lambda e: f"{e.ohlcv_a.exchange_name}_{e.ohlcv_a.instType}_{e.ohlcv_b.exchange_name}_{e.ohlcv_b.instType}_{e.ohlcv_b.symbol}",
+                lambda e: f"{e.ohlcv_a.exchange_name}_{e.ohlcv_a.inst_type}_{e.ohlcv_b.exchange_name}_{e.ohlcv_b.inst_type}_{e.ohlcv_b.symbol}",
                 spreads,
             ),
         }
@@ -203,7 +203,7 @@ class Client:
         exchange_a: Exchange,
         exchange_b: Exchange,
         symbol: Symbol,
-        instType: InstrumentType = InstrumentType.PERPETUAL,
+        inst_type: InstrumentType = InstrumentType.PERPETUAL,
         interval: Interval = Interval.interval_1d,
         starttime: Union[datetime, Tuple[int]] = None,
         endtime: Union[datetime, Tuple[int]] = None,
@@ -217,7 +217,7 @@ class Client:
             exchange_a (Exchange): exchange_a
             exchange_b (Exchange): exchange_b
             symbol (Symbol): symbol
-            instType (InstrumentType, optional): instrument type. Defaults to InstrumentType.PERPETUAL.
+            inst_type (InstrumentType, optional): instrument type. Defaults to InstrumentType.PERPETUAL.
             interval (Interval, optional): interval. Defaults to Interval.interval_1d.
             starttime (Union[datetime, Tuple[int]], optional): starttime of ohlcv data. Defaults to None.
             endtime (Union[datetime, Tuple[int]], optional): endtime of ohlcv data. Defaults to None.
@@ -230,8 +230,8 @@ class Client:
         instance_a: cryptomart.ExchangeAPIBase = getattr(self.cm, exchange_a)
         instance_b: cryptomart.ExchangeAPIBase = getattr(self.cm, exchange_b)
 
-        ohlcv_a = instance_a.ohlcv(symbol, instType, interval, starttime, endtime)
-        ohlcv_b = instance_b.ohlcv(symbol, instType, interval, starttime, endtime)
+        ohlcv_a = instance_a.ohlcv(symbol, inst_type, interval, starttime, endtime)
+        ohlcv_b = instance_b.ohlcv(symbol, inst_type, interval, starttime, endtime)
 
         return Spread.from_ohlcv(ohlcv_a, ohlcv_b, z_score_period)
 
@@ -239,7 +239,7 @@ class Client:
         self,
         exchanges: List[Exchange] = Exchange._values(),
         symbol: Union[Symbol, List[Symbol]] = Symbol._values(),
-        instType: Union[InstrumentType, List[InstrumentType]] = InstrumentType.PERPETUAL,
+        inst_type: Union[InstrumentType, List[InstrumentType]] = InstrumentType.PERPETUAL,
         interval: Interval = Interval.interval_1d,
         starttime: Union[datetime, Tuple[int]] = None,
         endtime: Union[datetime, Tuple[int]] = None,
@@ -261,8 +261,8 @@ class Client:
         logger.warning(
             f"get_spreads: z_score_period={z_score_period}, good_spreads={good_spreads}, minmum_rows={minimum_rows}"
         )
-        if not isinstance(instType, list):
-            instType = [instType]
+        if not isinstance(inst_type, list):
+            inst_type = [inst_type]
         if not isinstance(symbol, list):
             symbol = [symbol]
 
@@ -270,13 +270,13 @@ class Client:
         for exchange in exchanges:
             instance: cryptomart.ExchangeAPIBase = getattr(self.cm, exchange)
             exchange_instruments = instance.active_instruments.assign(exchange=exchange)[
-                [Instrument.instType, Instrument.symbol, "exchange"]
+                [Instrument.inst_type, Instrument.symbol, "exchange"]
             ]
             all_instruments = pd.concat([all_instruments, exchange_instruments], ignore_index=True)
 
-        # Create cartesian product of all exchange combinations with the same instType and symbol
+        # Create cartesian product of all exchange combinations with the same inst_type and symbol
         instrument_pairs = all_instruments.merge(
-            all_instruments, on=[Instrument.instType, Instrument.symbol], suffixes=("_a", "_b")
+            all_instruments, on=[Instrument.inst_type, Instrument.symbol], suffixes=("_a", "_b")
         )
 
         # Filter out duplicates
@@ -293,7 +293,7 @@ class Client:
                 row.exchange_a,
                 row.exchange_b,
                 row.symbol,
-                instType=row.instType,
+                inst_type=row.inst_type,
                 interval=interval,
                 starttime=starttime,
                 endtime=endtime,
