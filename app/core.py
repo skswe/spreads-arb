@@ -6,16 +6,19 @@ from datetime import datetime
 from typing import Callable, Dict, List, Tuple, Union
 
 import cryptomart
+from cryptomart.feeds import OHLCVFeed
+import dotenv
 import numpy as np
 import pandas as pd
 import pyutil
+import requests
 import vectorbt as vbt
 from cryptomart.enums import Exchange, Instrument, InstrumentType, Interval, Symbol
 from IPython.display import display
 from pyutil.io import redirect_stdout
 
 from .feeds import Spread
-from .globals import BLACKLISTED_SYMBOLS
+from .globals import BLACKLISTED_SYMBOLS, STUDY_START_DATE
 from .vbt_backtest import from_order_func_wrapper
 
 logger = logging.getLogger(__name__)
@@ -194,10 +197,19 @@ exchange_data = {
 
 
 class Client:
-    def __init__(self):
-        self.cm = cryptomart.Client()
+    def __init__(self, cache_kwargs: dict = {"disabled": False, "refresh": False}):
+        """_summary_
 
-    @pyutil.cache.cached("/tmp/cache/spread", is_method=True, log_level="INFO")
+        Args:
+            cache_kwargs (dict, optional): Cache control settings. See pyutil.cache.cached for details. Defaults to {"disabled": False, "refresh": False}.
+        """
+        self.cm = cryptomart.Client(cache_kwargs=cache_kwargs)
+        self.cache_kwargs = cache_kwargs
+
+    @pyutil.cache.cached(
+        os.path.join(os.getenv("SA_CACHE_PATH", "/tmp/cache"), "single_spread"),
+        is_method=True,
+    )
     def get_spread(
         self,
         exchange_a: Exchange,
@@ -269,15 +281,17 @@ class Client:
         all_instruments = pd.DataFrame()
         for exchange in exchanges:
             instance: cryptomart.ExchangeAPIBase = getattr(self.cm, exchange)
-            exchange_instruments = instance.active_instruments.assign(exchange=exchange)[
-                [Instrument.inst_type, Instrument.symbol, "exchange"]
-            ]
-            all_instruments = pd.concat([all_instruments, exchange_instruments], ignore_index=True)
+            for it in inst_type:
+                instruments = instance.instrument_info(it)
+                instruments = instruments[[Instrument.cryptomart_symbol]].rename(
+                    columns={Instrument.cryptomart_symbol: "symbol"}
+                )
+                instruments["inst_type"] = it
+                instruments["exchange"] = exchange
+                all_instruments = pd.concat([all_instruments, instruments], ignore_index=True)
 
         # Create cartesian product of all exchange combinations with the same inst_type and symbol
-        instrument_pairs = all_instruments.merge(
-            all_instruments, on=[Instrument.inst_type, Instrument.symbol], suffixes=("_a", "_b")
-        )
+        instrument_pairs = all_instruments.merge(all_instruments, on=["inst_type", "symbol"], suffixes=("_a", "_b"))
 
         # Filter out duplicates
         instrument_pairs = instrument_pairs[instrument_pairs.exchange_a > instrument_pairs.exchange_b].reset_index(
@@ -298,7 +312,7 @@ class Client:
                 starttime=starttime,
                 endtime=endtime,
                 z_score_period=z_score_period,
-                cache_kwargs=cache_kwargs,
+                cache_kwargs=dict(self.cache_kwargs, **cache_kwargs),
             )
             spread_list.append(spread)
 
@@ -459,3 +473,60 @@ class Client:
         display(result.portfolio.trades.records_readable.sort_values("Entry Timestamp").head(10))
         display(result.portfolio.orders.records_readable.sort_values("Timestamp").head(20))
         display(result.feed.underlyings)
+
+
+class FundingRateEstimator:
+    def __init__(self):
+        self.api = cryptomart.Client()
+        
+        self.exchange_priority = pd.DataFrame(
+            {
+                "exchange": [Exchange.BINANCE, Exchange.COINFLEX, Exchange.FTX, Exchange.KUCOIN, Exchange.GATEIO],
+                "priority": [1, 2, 3, 4, 5],
+            }
+        )
+        
+        self.interest_rates = self.get_interest_rates(STUDY_START_DATE, datetime.now().date())
+
+    def get_interest_rates(self, start: datetime, end: datetime):
+        """Return daily interest rate from `start` to `end` (not end inclusive)
+
+        Args:
+            start (datetime): start date
+            end (datetime): end date
+
+        Returns:
+            pd.DataFrame: DataFrame with a schema of [timestamp, interest_rate]
+        """
+        dotenv.load_dotenv()
+        API_KEY = os.getenv("FRED_API_KEY")
+        
+        params = {
+            "series_id": "DTB3",
+            "api_key": API_KEY,
+            "file_type": "json",
+            "observation_start": start.strftime("%Y-%m-%d"),
+            "observation_end": end.strftime("%Y-%m-%d"),
+        }
+        
+        res = requests.get("https://api.stlouisfed.org/fred/series/observations", params=params).json()
+        data = pd.DataFrame(res["observations"])
+        
+        data = data[["date", "value"]].rename(columns={"date": "timestamp", "value": "interest_rate"})
+        data["timestamp"] = pd.to_datetime(data["timestamp"])
+        
+        # remove the last index since we only care about open_time
+        full_index = pd.date_range(start, end, freq="1d")[:-1]
+        data = data.set_index("timestamp").reindex(full_index).reset_index().rename(columns={"index": "timestamp"})
+        
+        data["interest_rate"] = data["interest_rate"].replace(".", np.nan).fillna(method="ffill").fillna(method="bfill").astype(float)
+        return data
+        
+
+    def estimate(self, perp_feed: OHLCVFeed, spot_feed: OHLCVFeed):
+        exchange = perp_feed.exchange_name
+        perp_feed = perp_feed[["open_time", "close"]].rename(columns={"open_time": "timestamp"})
+        spot_feed = spot_feed[["open_time", "close"]].rename(columns={"open_time": "timestamp"})
+        
+        
+        

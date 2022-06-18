@@ -1,3 +1,5 @@
+from typing import Union
+from cryptomart.enums import InstrumentType
 import numpy as np
 import pandas as pd
 from cryptomart.feeds import FeedBase, OHLCVFeed
@@ -11,6 +13,7 @@ class OHLCVColumn:
     low = "low"
     close = "close"
     volume = "volume"
+    funding_rate = "funding_rate"
     returns = "returns"
 
 
@@ -26,6 +29,10 @@ class Spread(FeedBase):
             self.ohlcv_a = a
             self.ohlcv_b = b
 
+        if (np.array([a.inst_type, b.inst_type]) == InstrumentType.PERPETUAL).all():
+            # Append funding rate column
+            pass
+    
         super().__init__(data=data)
 
     @classmethod
