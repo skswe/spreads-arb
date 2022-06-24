@@ -2,7 +2,7 @@ from typing import Union
 from cryptomart.enums import InstrumentType
 import numpy as np
 import pandas as pd
-from cryptomart.feeds import FeedBase, OHLCVFeed
+from cryptomart.feeds import TSFeedBase, OHLCVFeed
 from IPython.display import display
 
 
@@ -21,7 +21,7 @@ class SpreadColumn(OHLCVColumn):
     zscore = "zscore"
 
 
-class Spread(FeedBase):
+class Spread(TSFeedBase):
     _metadata = ["ohlcv_a", "ohlcv_b"]
 
     def __init__(self, data=None, a: OHLCVFeed = None, b: OHLCVFeed = None):
@@ -32,7 +32,7 @@ class Spread(FeedBase):
         if (np.array([a.inst_type, b.inst_type]) == InstrumentType.PERPETUAL).all():
             # Append funding rate column
             pass
-    
+
         super().__init__(data=data)
 
     @classmethod

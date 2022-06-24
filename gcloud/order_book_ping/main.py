@@ -4,8 +4,8 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 
+import pandas as pd
 from numpy import isin
-from pandas import DataFrame
 
 # Since GOOGLE_FUNCTION_SOURCE is modified, the directory of this file will be in sys.path rather than the root workspace directory
 # Insert root directory of build location (/workspace) to sys.path
@@ -37,7 +37,7 @@ def order_book_ping(request):
             order_book = dm._exchange_instance_map[exchange].order_book(
                 symbol, inst_type, depth=ORDER_BOOK_DEPTH, log_level="INFO"
             )
-            if isinstance(order_book, DataFrame) and len(order_book.columns) == ORDER_BOOK_SHAPE[1]:
+            if isinstance(order_book, pd.DataFrame) and len(order_book.columns) == ORDER_BOOK_SHAPE[1]:
                 logger.info(
                     f"Order book received: #{id:<4} {exchange:<15} {symbol:<15} {inst_type} ... Pushing to database"
                 )
@@ -93,7 +93,7 @@ def order_book_ping(request):
     for i, error in enumerate(errors):
         msg = "-" * 20 + f" {i}/{len(errors)}" + "\n" + " ".join(error)
         msg = msg.replace("\n", " ")
-        logger.warning(msg)
+        logger.error(msg)
 
     if len(errors) == 0:
         return "Success"

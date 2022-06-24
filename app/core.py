@@ -2,11 +2,10 @@ import datetime
 import logging
 import os
 from collections import namedtuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Tuple, Union
 
 import cryptomart
-from cryptomart.feeds import OHLCVFeed
 import dotenv
 import numpy as np
 import pandas as pd
@@ -14,8 +13,12 @@ import pyutil
 import requests
 import vectorbt as vbt
 from cryptomart.enums import Exchange, Instrument, InstrumentType, Interval, Symbol
+from cryptomart.errors import NotSupportedError
+from cryptomart.feeds import FundingRateFeed, OHLCVFeed
 from IPython.display import display
 from pyutil.io import redirect_stdout
+from sklearn import linear_model
+from sklearn.metrics import mean_absolute_percentage_error
 
 from .feeds import Spread
 from .globals import BLACKLISTED_SYMBOLS, STUDY_START_DATE
@@ -476,19 +479,26 @@ class Client:
 
 
 class FundingRateEstimator:
-    def __init__(self):
-        self.api = cryptomart.Client()
-        
-        self.exchange_priority = pd.DataFrame(
-            {
-                "exchange": [Exchange.BINANCE, Exchange.COINFLEX, Exchange.FTX, Exchange.KUCOIN, Exchange.GATEIO],
-                "priority": [1, 2, 3, 4, 5],
-            }
-        )
-        
-        self.interest_rates = self.get_interest_rates(STUDY_START_DATE, datetime.now().date())
+    def __init__(
+        self,
+        cache_kwargs: dict = {"disabled": False, "refresh": False},
+        log_level="INFO",
+        quiet=True,
+        input_features=["close", "interest_rate"],
+    ):
+        self.api = cryptomart.Client(cache_kwargs=cache_kwargs, log_level=log_level, quiet=quiet)
 
-    def get_interest_rates(self, start: datetime, end: datetime):
+        self.exchange_priority = [Exchange.BINANCE, Exchange.COINFLEX, Exchange.FTX, Exchange.KUCOIN, Exchange.GATEIO]
+
+        self.interest_rates = self.load_interest_rates(STUDY_START_DATE, datetime.now().date())
+
+        self.target = "funding_rate"
+        self.input_features = input_features
+        self.pred_col = "funding_rate_estimate"
+
+        logger.setLevel(log_level)
+
+    def load_interest_rates(self, start: datetime, end: datetime) -> pd.DataFrame:
         """Return daily interest rate from `start` to `end` (not end inclusive)
 
         Args:
@@ -500,7 +510,7 @@ class FundingRateEstimator:
         """
         dotenv.load_dotenv()
         API_KEY = os.getenv("FRED_API_KEY")
-        
+
         params = {
             "series_id": "DTB3",
             "api_key": API_KEY,
@@ -508,25 +518,167 @@ class FundingRateEstimator:
             "observation_start": start.strftime("%Y-%m-%d"),
             "observation_end": end.strftime("%Y-%m-%d"),
         }
-        
+
         res = requests.get("https://api.stlouisfed.org/fred/series/observations", params=params).json()
         data = pd.DataFrame(res["observations"])
-        
+
         data = data[["date", "value"]].rename(columns={"date": "timestamp", "value": "interest_rate"})
         data["timestamp"] = pd.to_datetime(data["timestamp"])
-        
+
         # remove the last index since we only care about open_time
         full_index = pd.date_range(start, end, freq="1d")[:-1]
         data = data.set_index("timestamp").reindex(full_index).reset_index().rename(columns={"index": "timestamp"})
-        
-        data["interest_rate"] = data["interest_rate"].replace(".", np.nan).fillna(method="ffill").fillna(method="bfill").astype(float)
-        return data
-        
 
-    def estimate(self, perp_feed: OHLCVFeed, spot_feed: OHLCVFeed):
-        exchange = perp_feed.exchange_name
-        perp_feed = perp_feed[["open_time", "close"]].rename(columns={"open_time": "timestamp"})
-        spot_feed = spot_feed[["open_time", "close"]].rename(columns={"open_time": "timestamp"})
-        
-        
-        
+        data["interest_rate"] = (
+            data["interest_rate"].replace(".", np.nan).fillna(method="ffill").fillna(method="bfill").astype(float)
+        )
+        return data
+
+    def _fill_spot_feed(
+        self,
+        perp_feed: OHLCVFeed,
+        spot_feed: OHLCVFeed,
+    ) -> OHLCVFeed:
+        """Fill any rows in spot_feed which are not in perp_feed with spot data from other exchanges"""
+        missing_dates = perp_feed.valid_rows.index[~perp_feed.valid_rows.index.isin(spot_feed.valid_rows.index)]
+        if len(missing_dates) > 0:
+            for exch in self.exchange_priority + list(np.setdiff1d(Exchange._values(), self.exchange_priority)):
+                logger.debug(f"getting spot ohlcv from {exch}")
+
+                try:
+                    exch_spot = (
+                        getattr(self.api, exch)
+                        .ohlcv(
+                            spot_feed.symbol,
+                            "spot",
+                            starttime=missing_dates.min(),
+                            endtime=missing_dates.max() + timedelta(days=1),
+                        )
+                        .set_index("open_time")[["close"]]
+                    )
+                except NotSupportedError:
+                    logger.debug(f"Skipping {exch}")
+                    continue
+
+                spot_feed = spot_feed.fillna(exch_spot)
+
+                missing_dates = perp_feed.valid_rows.index[
+                    ~perp_feed.valid_rows.index.isin(spot_feed.valid_rows.index)
+                ]
+
+                logger.debug(f"missing dates after filling: \n{missing_dates}\n")
+
+                if len(missing_dates) == 0:
+                    break
+        else:
+            logger.debug("no missing dates - no filling necessary")
+
+        if len(missing_dates) > 0:
+            logger.warning(f"Missing dates for {spot_feed.exchange_name}.{spot_feed.symbol}: \n{missing_dates}\n")
+
+        return spot_feed
+
+    def _prepare_train_data(
+        self,
+        perp_feed: OHLCVFeed,
+        spot_feed: OHLCVFeed,
+        funding_rate: FundingRateFeed,
+        fill_data: bool = False,
+    ) -> pd.DataFrame:
+        """Clean input data and format with standard features.
+
+        Args:
+            perp_feed (OHLCVFeed): standard perp feed
+            spot_feed (OHLCVFeed): standard spot feed
+            funding_rate (FundingRateFeed): standard funding rate feed
+            fill_data (bool, optional): if True, fills spot_feed using `self._fill_spot_feed`. Defaults to False.
+
+        Returns:
+            Tuple[pd.DataFrame, pd.Series]: DataFrame with schema: [self.input_features, self.target] and datetime index
+        """
+        perp_feed.value_column = "close"
+        spot_feed.value_column = "close"
+        perp_feed = perp_feed.set_index("open_time")[["close"]]
+        spot_feed = spot_feed.set_index("open_time")[["close"]]
+        funding_rate = funding_rate.set_index("timestamp")
+
+        if fill_data:
+            spot_feed = self._fill_spot_feed(perp_feed, spot_feed)
+
+        # Combine feeds into spread with columns [close] and datetime index
+        data = perp_feed.merge(spot_feed, left_index=True, right_index=True, suffixes=("_perp", "_spot")).pipe(
+            lambda df: pd.Series(df["close_perp"] - df["close_spot"], name="close").to_frame()
+        )
+
+        # Pull interest rates
+        start_time = perp_feed[perp_feed.close.notna()].index.min()
+        end_time = perp_feed[perp_feed.close.notna()].index.max()
+        interest_rates = self.interest_rates[self.interest_rates.timestamp.between(start_time, end_time)].set_index(
+            "timestamp"
+        )
+
+        # Merge other features in
+        data = data.merge(interest_rates, left_index=True, right_index=True, how="left")
+        data = data.merge(funding_rate, left_index=True, right_index=True, how="left")
+        data["index"] = data.reset_index().index
+
+        logger.debug(f"Pre estimate NaNs: \n{data.isna().sum()}")
+
+        return data
+
+    def _fit_model(self, X: pd.DataFrame, y: pd.DataFrame):
+        model = linear_model.LinearRegression()
+        model.fit(X, y)
+        logger.info(
+            f"Model fit with coeffs: {model.coef_}, intercept: {model.intercept_} R2 score: {model.score(X, y)}"
+        )
+        return model
+
+    def run(
+        self,
+        perp_feed: OHLCVFeed,
+        spot_feed: OHLCVFeed,
+        funding_rate: FundingRateFeed,
+        fill_data: bool = False,
+    ):
+        """Estimate funding rate using underlying spread and interest rate
+
+        Args:
+            perp_feed (OHLCVFeed): Standard perpetual OHLCV data feed with standard start and end times
+            spot_feed (OHLCVFeed): Standard spot OHLCV data feed with standard start and end times
+            funding_rate (FundingRateFeed): Standard Funding Rate data feed with standard start and end times
+
+        Returns:
+            pd.DataFrame: DataFrame with the following schema: [open_time, close, interest_rate, funding_rate, funding_rate_estimate].
+        """
+        logger.debug(f"{perp_feed.close.isna().sum()} NaNs in perp_feed")
+        logger.debug(f"{spot_feed.close.isna().sum()} NaNs in spot_feed")
+        logger.debug(f"{funding_rate.funding_rate.isna().sum()} NaNs in funding_rate")
+        logger.debug(f"perp data exists between {perp_feed.earliest_time} and {perp_feed.latest_time}")
+
+        data = self._prepare_train_data(perp_feed, spot_feed, funding_rate, fill_data=fill_data)
+
+        X_train = data.dropna()[self.input_features]
+        y_train = data.dropna()[self.target]
+
+        X_pred = data[self.input_features].dropna()
+        logger.debug(f"{len(X_pred)} rows to predict")
+
+        model_fit = self._fit_model(X_train, y_train)
+
+        predictions = pd.Series(model_fit.predict(X_pred), index=X_pred.index, name=self.pred_col)
+        data = data.merge(predictions, left_index=True, right_index=True, how="left")
+
+        logger.debug(f"Final NaNs: \n{data.isna().sum()}")
+
+        return data
+
+    def error(self, data):
+        data = data.dropna()
+        return mean_absolute_percentage_error(data[self.target], data[self.pred_col])
+
+    def plot(self, data):
+        return data[[self.target, self.pred_col]].plot()
+
+    def scatter(self, data):
+        return data.plot.scatter(self.target, self.pred_col)
