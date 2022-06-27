@@ -3,3 +3,5 @@ __pycache__
 *.pyc
 *.ipynb
 tmp
+constants
+bigquery_cred.json
