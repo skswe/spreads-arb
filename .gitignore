@@ -5,3 +5,4 @@ __pycache__
 tmp
 constants
 bigquery_cred.json
+*.csv
