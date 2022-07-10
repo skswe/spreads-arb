@@ -1,97 +1,196 @@
-from typing import Union
-from cryptomart.enums import InstrumentType
+from typing import List
+
+import cryptomart as cm
 import numpy as np
 import pandas as pd
-from cryptomart.feeds import TSFeedBase, OHLCVFeed
+import plotly.graph_objects as go
+from cryptomart.feeds import FundingRateFeed, OHLCVFeed, TSFeedBase
 from IPython.display import display
 
+from .enums import Exchange, InstrumentType, Interval, OHLCVColumn, SpreadColumn, Symbol
 
-class OHLCVColumn:
-    open_time = "open_time"
-    open = "open"
-    high = "high"
-    low = "low"
-    close = "close"
-    volume = "volume"
-    funding_rate = "funding_rate"
-    returns = "returns"
-
-
-class SpreadColumn(OHLCVColumn):
-    zscore = "zscore"
+client = cm.Client(quiet=True)
 
 
 class Spread(TSFeedBase):
-    _metadata = ["ohlcv_a", "ohlcv_b"]
+    _metadata = TSFeedBase._metadata + [
+        "ohlcv_list",
+        "funding_rate",
+        "bid_ask_spread",
+    ]
 
     def __init__(self, data=None, a: OHLCVFeed = None, b: OHLCVFeed = None):
-        if a is not None and b is not None:
-            self.ohlcv_a = a
-            self.ohlcv_b = b
+        timedelta = a.timedelta if a is not None else None
+        super().__init__(
+            data=data, time_column=SpreadColumn.open_time, value_column=SpreadColumn.open, timedelta=timedelta
+        )
 
-        if (np.array([a.inst_type, b.inst_type]) == InstrumentType.PERPETUAL).all():
-            # Append funding rate column
-            pass
-
-        super().__init__(data=data)
+        self.ohlcv_list = [a, b]
 
     @classmethod
-    def from_ohlcv(cls, ohlcv_a: OHLCVFeed, ohlcv_b: OHLCVFeed, z_score_period: int = 30):
-        merged = ohlcv_b._df.merge(ohlcv_a._df, on=OHLCVColumn.open_time, suffixes=("_b", "_a"))
-        data = pd.DataFrame()
-        data[SpreadColumn.open_time] = merged[OHLCVColumn.open_time]
-        data[SpreadColumn.open] = merged[OHLCVColumn.open + "_b"] - merged[OHLCVColumn.open + "_a"]
-        data[SpreadColumn.high] = merged[OHLCVColumn.high + "_b"] - merged[OHLCVColumn.high + "_a"]
-        data[SpreadColumn.low] = merged[OHLCVColumn.low + "_b"] - merged[OHLCVColumn.low + "_a"]
-        data[SpreadColumn.close] = merged[OHLCVColumn.close + "_b"] - merged[OHLCVColumn.close + "_a"]
-        data[SpreadColumn.volume] = (merged[OHLCVColumn.volume + "_b"] + merged[OHLCVColumn.volume + "_a"]) / 2
-        data[SpreadColumn.returns] = merged[OHLCVColumn.returns + "_b"] - merged[OHLCVColumn.returns + "_a"]
+    def from_api(
+        cls,
+        symbol: Symbol,
+        exchanges: List[Exchange],
+        starttime: tuple[int],
+        endtime: tuple[int],
+        inst_types: List[InstrumentType] = [InstrumentType.PERPETUAL, InstrumentType.PERPETUAL],
+        interval: Interval = Interval.interval_1d,
+        cache_kwargs: dict = {},
+    ):
+        assert len(exchanges) == 2, "Must provide two exchanges"
+        assert len(inst_types) == 2, "Must provide two inst_types"
+        ohlcv_a = client.ohlcv(
+            exchanges[0], symbol, inst_types[0], starttime, endtime, interval, cache_kwargs=cache_kwargs
+        )
+        ohlcv_b = client.ohlcv(
+            exchanges[1], symbol, inst_types[1], starttime, endtime, interval, cache_kwargs=cache_kwargs
+        )
+        spread = cls.create_ohlcv(ohlcv_a, ohlcv_b)
+        return cls(data=spread, a=ohlcv_a, b=ohlcv_b)
 
-        start_time = max(ohlcv_a.earliest_time, ohlcv_b.earliest_time)
-        end_time = min(ohlcv_a.latest_time, ohlcv_b.latest_time)
+    @classmethod
+    def from_ohlcv(
+        cls,
+        a: OHLCVFeed,
+        b: OHLCVFeed,
+    ):
+        return cls(cls.create_ohlcv(a, b), a, b)
 
-        data = data[data[SpreadColumn.open_time].between(start_time, end_time)]
-        metric_column = data[OHLCVColumn.close]
-        data[SpreadColumn.zscore] = (
-            metric_column - metric_column.rolling(z_score_period).mean()
-        ) / metric_column.rolling(z_score_period).std()
+    @staticmethod
+    def create_ohlcv(a: OHLCVFeed, b: OHLCVFeed):
+        def aggregate(row):
+            return pd.Series(
+                {
+                    SpreadColumn.open_time: row.open_time,
+                    SpreadColumn.open: row.open_y - row.open_x,
+                    SpreadColumn.high: row.high_y - row.high_x,
+                    SpreadColumn.low: row.low_y - row.low_x,
+                    SpreadColumn.close: row.close_y - row.close_x,
+                    SpreadColumn.volume: (row.volume_y + row.volume_x) / 2,
+                }
+            )
 
-        return cls(data=data, a=ohlcv_a, b=ohlcv_b)
+        return a.merge(b, on="open_time").apply(aggregate, axis=1).fillna(np.nan).reset_index(drop=True)
+
+    def add_bid_ask_spread(self, bid_ask_spread_a: FundingRateFeed, bid_ask_spread_b: FundingRateFeed, fillna=True):
+        """Add bid ask spread feeds to underlying OHLCVFeeds"""
+        bid_ask_spread_a = bid_ask_spread_a.resample(self.ohlcv_list[0].timedelta, on="date").median()
+        bid_ask_spread_b = bid_ask_spread_b.resample(self.ohlcv_list[1].timedelta, on="date").median()
+
+        self.ohlcv_list[0] = (
+            self.ohlcv_list[0]
+            .drop(columns="bid_ask_spread", errors="ignore")
+            .set_index(self.ohlcv_list[0].time_column)
+            .join(bid_ask_spread_a, how="left")
+            .reset_index()
+        )
+        self.ohlcv_list[1] = (
+            self.ohlcv_list[1]
+            .drop(columns="bid_ask_spread", errors="ignore")
+            .set_index(self.ohlcv_list[1].time_column)
+            .join(bid_ask_spread_b, how="left")
+            .reset_index()
+        )
+
+        if fillna:
+            self.ohlcv_list[0].bid_ask_spread.fillna(
+                self.ohlcv_list[0].bid_ask_spread.expanding(1).mean(), inplace=True
+            )
+            self.ohlcv_list[1].bid_ask_spread.fillna(
+                self.ohlcv_list[1].bid_ask_spread.expanding(1).mean(), inplace=True
+            )
+
+    def add_funding_rate(self, funding_rate_a: FundingRateFeed, funding_rate_b: FundingRateFeed, fillna=True):
+        """Add funding rate feeds to underlying OHLCVFeeds"""
+        funding_rate_a = funding_rate_a.resample(self.ohlcv_list[0].timedelta, on="timestamp").median()
+        funding_rate_b = funding_rate_b.resample(self.ohlcv_list[1].timedelta, on="timestamp").median()
+
+        self.ohlcv_list[0] = (
+            self.ohlcv_list[0]
+            .drop(columns="funding_rate", errors="ignore")
+            .set_index(self.ohlcv_list[0].time_column)
+            .join(funding_rate_a, how="left")
+            .reset_index()
+        )
+        self.ohlcv_list[1] = (
+            self.ohlcv_list[1]
+            .drop(columns="funding_rate", errors="ignore")
+            .set_index(self.ohlcv_list[1].time_column)
+            .join(funding_rate_a, how="left")
+            .reset_index()
+        )
+
+        if fillna:
+            self.ohlcv_list[0].funding_rate.fillna(self.ohlcv_list[0].funding_rate.expanding(1).mean(), inplace=True)
+            self.ohlcv_list[1].funding_rate.fillna(self.ohlcv_list[1].funding_rate.expanding(1).mean(), inplace=True)
+
+    def returns(self, column=SpreadColumn.close):
+        # ohlcv_a, ohlcv_b = iter(self.ohlcv_list)
+        return (
+            (((self[column] - self[column].shift(1)) / self[column].shift(1)) * 100)
+            .rename("returns")
+            .set_axis(self[self.time_column])
+        )
+        return ohlcv_b.returns(column) - ohlcv_a.returns(column)
+
+    def zscore(self, column=SpreadColumn.close, period=30):
+        return (
+            ((self[column] - self[column].rolling(period).mean()) / self[column].rolling(period).std())
+            .rename("zscore")
+            .set_axis(self[self.time_column])
+        )
+
+    def volatility(self, column=SpreadColumn.close):
+        DAYS_IN_YEAR = 365
+        return self.returns(column).std() * np.sqrt(DAYS_IN_YEAR)
+
+    def value_at_risk(self, percentile=5):
+        return tuple(
+            x.dropna().returns().quantile(percentile / 100, interpolation="midpoint") / 100 for x in self.ohlcv_list
+        )
 
     @property
     def underlyings(self):
-        a = self.ohlcv_a[np.isin(self.ohlcv_a[OHLCVColumn.open_time], self[SpreadColumn.open_time])].reset_index(
-            drop=True
+        return pd.concat(
+            [df.set_index(SpreadColumn.open_time) for df in self.ohlcv_list],
+            keys=[df._underlying_info for df in self.ohlcv_list],
+            axis=1,
         )
-        b = self.ohlcv_b[np.isin(self.ohlcv_b[OHLCVColumn.open_time], self[SpreadColumn.open_time])].reset_index(
-            drop=True
-        )
-        return pd.concat([a._df, b._df], keys=[a._underlying_info, b._underlying_info], axis=1)
 
-    def underlying_col(self, column_name=SpreadColumn.close):
-        index = self[SpreadColumn.open_time]
-        df = self.underlyings.droplevel(0, axis=1)[column_name].set_axis(
-            self.underlyings.columns.get_level_values(0).unique(), axis=1
-        )
-        df.index = index
-        return df
-
-    @property
-    def volatility(self):
-        DAYS_IN_YEAR = 365
-        return self[OHLCVColumn.returns].std() * np.sqrt(DAYS_IN_YEAR)
+    def underlying_col(self, column=SpreadColumn.close):
+        return self.underlyings.loc[:, (slice(None), column)]
 
     @property
     def _underlying_info(self):
-        return f"{self.ohlcv_b._underlying_info} - {self.ohlcv_a._underlying_info}"
+        return f"Spread({self.ohlcv_list[1]._underlying_info} - {self.ohlcv_list[0]._underlying_info})"
 
-    def __str__(self):
-        return super().__str__() + self._underlying_info + "\n"
-
-    def profile(self):
-        self.show()
-        display(self.underlyings)
-        self.ohlcv_a.show()
-        display(self.ohlcv_a.orig_starttime, self.ohlcv_a.orig_endtime)
-        self.ohlcv_b.show()
-        display(self.ohlcv_b.orig_starttime, self.ohlcv_b.orig_endtime)
+    def plot(self, *args, columns="all", kind="line", **kwargs):
+        if kind == "ohlcv":
+            return go.Figure(
+                data=go.Candlestick(
+                    x=self[SpreadColumn.open_time],
+                    open=self[SpreadColumn.open],
+                    high=self[SpreadColumn.high],
+                    low=self[SpreadColumn.low],
+                    close=self[SpreadColumn.close],
+                ),
+                layout=go.Layout(title=self._underlying_info),
+            )
+        else:
+            if columns == "all":
+                columns = list(set(SpreadColumn._values()) - {SpreadColumn.open_time})
+            elif type(columns) == str:
+                columns = [columns]
+            fig: go.Figure = pd.DataFrame(self.set_index(SpreadColumn.open_time)[columns]).plot(
+                *args, kind=kind, title=self._underlying_info, backend="plotly", **kwargs
+            )
+            fig.update_layout(
+                xaxis={
+                    "rangeslider": {
+                        "visible": True,
+                    },
+                    "type": "date",
+                },
+            )
+            return fig

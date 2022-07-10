@@ -136,7 +136,7 @@ def get_bid_ask_spread(exchange: Exchange, symbol: Symbol, inst_type: Instrument
         ORDER BY
             date
     """
-    return run_query(exchange, symbol, inst_type, qry)
+    return run_query(exchange, symbol, inst_type, qry).apply(lambda c: pd.to_datetime(c) if c.name == "date" else c)
 
 
 @cached(
