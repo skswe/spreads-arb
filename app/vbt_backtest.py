@@ -42,18 +42,22 @@ def sort_call_seq_for_entry(c, call_seq_out, bt_args):
     current_zscore = bt_args.zscore[c.i]
     potential_short_entry = current_zscore > bt_args.z_score_thresholds[0]
     if potential_short_entry:
+        # col_1 goes short, so process first to get short cash
         call_seq_out[:] = np.array([1, 0])
     else:
+        # col_0 goes short, so process first to get short cash
         call_seq_out[:] = np.array([0, 1])
 
 
 @njit
 def sort_call_seq_for_exit(c, call_seq_out):
+    # Reverse sort last position to close the largest long position first
+    # and close the largest short position last
     call_seq_out[:] = (-c.last_position).argsort()
 
 
 @njit
-def pre_group_func_nb(c, bt_args):
+def pre_group_func_nb(c):
     """Called before processing a group. (Group contains both legs of spread)"""
     directions = np.array([NEUTRAL, NEUTRAL], dtype=np.int_)
     spread_dir = np.array([NEUTRAL])
@@ -63,7 +67,8 @@ def pre_group_func_nb(c, bt_args):
 
 @njit
 def pre_segment_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
-    """Called before segment is processed. Segment refers to a single time step within a group"""
+    """Prepare call_seq for either entering or exiting a position. On entry, col_0 goes short, on exit, col_1 goes short.
+    Called before segment is processed. Segment refers to a single time step within a group"""
     if (directions == NEUTRAL).all():
         sort_call_seq_for_entry(c, call_seq_out, bt_args)
     else:
@@ -99,13 +104,32 @@ def pre_segment_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
     return (directions, spread_dir, call_seq_out)
 
 
+# If z_score outside entry band:
+#   if z_score above 0: go long
+#   if z_score below 0: go short
+# If z_score outside exit band:
+#   exit trade
+
+
+@njit
+def determine_spread_direction(current_zscore, inner_band_threshold, outer_band_threshold):
+    if abs(current_zscore) < abs(inner_band_threshold):
+        if current_zscore > 0:
+            return LONG
+        else:
+            return SHORT
+    if abs(current_zscore) > abs(outer_band_threshold):
+        if current_zscore > 0:
+            return SHORT
+        else:
+            return LONG
+
+
 @njit
 def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
     current_zscore = bt_args.zscore[c.i]
     current_spread_direction = spread_dir[0]
-    low_zscore = current_zscore < -bt_args.z_score_thresholds[0]
-    high_zscore = current_zscore > bt_args.z_score_thresholds[1]
-    col = call_seq_out[c.call_idx % c.group_len]
+    col = call_seq_out[c.call_idx % c.group_len]  # current column
     trade_col = c.close[c.i, :].argmax()  # Column to use for determining trade size (highest leg price)
 
     fee_pct = bt_args.fee_pct[col]
@@ -124,31 +148,47 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
     if current_leg_direction == NEUTRAL:
         log(bt_args.logging, "Not in market", "col=", col)
 
-        #                  Nominal amount          Leverage factor
-        # trade_size = -(trade_value / price) * (target_vol / volatility)
-        leverage_factor = 1 / (
-            (max(abs(bt_args.var[trade_col][0]), abs(bt_args.var[trade_col][1])) * SAFETY_BUFFER) + maint_margin
-        )
-        trade_size = (bt_args.trade_value / c.close[c.i, trade_col]) * leverage_factor
+        # Determine trade sizing using trade_value, current price, target_vol, volatility
+        #
+        #                                          1
+        # leverage_factor =   --------------------------------------------
+        #                     mmr + max(low_var, high_var) * SAFETY_BUFFER
 
-        if low_zscore:
+        #                          trade_value * target_vol
+        # trade_size =   --------------------------------------------
+        #                             price * volatility
+
+        # Nominal amount: trade_value / price
+        # leverage_factor: target_vol / volatility
+
+        low_trade_col_var = abs(bt_args.var[trade_col][0])
+        high_trade_col_var = abs(bt_args.var[trade_col][1])
+        trade_col_close = c.close[c.i, col]
+        leverage_factor = 1 / ((max(low_trade_col_var, high_trade_col_var) * SAFETY_BUFFER) + maint_margin)
+        trade_size = (bt_args.trade_value / trade_col_close) * leverage_factor
+
+        direction = determine_spread_direction(
+            current_zscore, bt_args.z_score_thresholds[0].bt_args.z_score_thresholds[1]
+        )
+
+        if direction == LONG:
             log(bt_args.logging, "Going long on spread", "leverage_factor=", leverage_factor)
 
             return col, nb.order_nb(
                 size=trade_size if col == 1 else -trade_size,
-                price=c.close[c.i, col],
+                price=current_price,
                 fees=fee_pct,
                 fixed_fees=fee_fixed,
                 raise_reject=True,
                 allow_partial=False,
             )
 
-        elif high_zscore:
+        elif direction == SHORT:
             log(bt_args.logging, "Going short on spread", "leverage_factor=", leverage_factor)
 
             return col, nb.order_nb(
                 size=trade_size if col == 0 else -trade_size,
-                price=c.close[c.i, col],
+                price=current_price,
                 fees=fee_pct,
                 fixed_fees=fee_fixed,
                 raise_reject=True,
@@ -158,7 +198,7 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
         log(bt_args.logging, "Will not enter")
         return -1, nb.order_nothing_nb()
 
-    else:
+    else:  # Position is held by at least one leg
         # Break loop after an entry
         if c.call_idx >= c.group_len:
             return -1, nb.order_nothing_nb()
@@ -166,9 +206,7 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
         current_position = c.last_position[col]
 
         # Check for liquidation.
-        liq_price = c.close[c.i, col] * (
-            1 + (max(abs(low_var), abs(high_var)) * SAFETY_BUFFER) * -current_leg_direction
-        )
+        liq_price = current_price * (1 + (max(abs(low_var), abs(high_var)) * SAFETY_BUFFER) * -current_leg_direction)
 
         log(
             bt_args.logging,
@@ -193,7 +231,7 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
             log(bt_args.logging, "Closing a long spread")
             return col, nb.order_nb(
                 size=-current_position,
-                price=c.close[c.i, col],
+                price=current_price,
                 fees=fee_pct,
                 fixed_fees=fee_fixed,
                 raise_reject=True,
@@ -203,7 +241,7 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
             log(bt_args.logging, "Closing a short spread")
             return col, nb.order_nb(
                 size=-current_position,
-                price=c.close[c.i, col],
+                price=current_price,
                 fees=fee_pct,
                 fixed_fees=fee_fixed,
                 raise_reject=True,
@@ -283,9 +321,9 @@ def from_order_func_wrapper(close_prices: np.ndarray, bt_args: BacktestArgs):
         cash_sharing=True,
         init_cash=bt_args.initial_cash,
         flexible=True,
+        # max_orders = at most a buy/sell on each leg = 4 orders per tick
         max_orders=close_prices.shape[0] * 4,
         pre_group_func_nb=pre_group_func_nb,
-        pre_group_args=(bt_args,),
         pre_segment_func_nb=pre_segment_func_nb,
         pre_segment_args=(bt_args,),
         post_order_func_nb=post_order_func_nb,
