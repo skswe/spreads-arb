@@ -126,12 +126,7 @@ class Spread(TSFeedBase):
             self.ohlcv_list[1].funding_rate.fillna(self.ohlcv_list[1].funding_rate.expanding(1).mean(), inplace=True)
 
     def returns(self, column=SpreadColumn.close):
-        # ohlcv_a, ohlcv_b = iter(self.ohlcv_list)
-        return (
-            (((self[column] - self[column].shift(1)) / self[column].shift(1)) * 100)
-            .rename("returns")
-            .set_axis(self[self.time_column])
-        )
+        ohlcv_a, ohlcv_b = iter(self.ohlcv_list)
         return ohlcv_b.returns(column) - ohlcv_a.returns(column)
 
     def zscore(self, column=SpreadColumn.close, period=30):
