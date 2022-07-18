@@ -94,12 +94,11 @@ class Spread(TSFeedBase):
         )
 
         if fillna:
-            self.ohlcv_list[0].bid_ask_spread.fillna(
-                self.ohlcv_list[0].bid_ask_spread.expanding(1).mean(), inplace=True
-            )
-            self.ohlcv_list[1].bid_ask_spread.fillna(
-                self.ohlcv_list[1].bid_ask_spread.expanding(1).mean(), inplace=True
-            )
+            for x in range(len(self.ohlcv_list)):
+                self.ohlcv_list[x].bid_ask_spread.fillna(
+                    self.ohlcv_list[x].bid_ask_spread.expanding(1).mean(), inplace=True
+                )
+                self.ohlcv_list[x].bid_ask_spread.fillna(self.ohlcv_list[x].bid_ask_spread.mean(), inplace=True)
 
     def add_funding_rate(self, funding_rate_a: FundingRateFeed, funding_rate_b: FundingRateFeed, fillna=True):
         """Add funding rate feeds to underlying OHLCVFeeds"""
