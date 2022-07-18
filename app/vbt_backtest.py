@@ -8,6 +8,7 @@ import vectorbt.portfolio.nb as nb
 from numba import njit
 from pyutil.dicts import format_dict
 
+NONE = -999
 LONG = 1
 SHORT = -1
 NEUTRAL = 0
@@ -61,12 +62,13 @@ def pre_group_func_nb(c):
     """Called before processing a group. (Group contains both legs of spread)"""
     directions = np.array([NEUTRAL, NEUTRAL], dtype=np.int_)
     spread_dir = np.array([NEUTRAL])
+    funding_debit = np.array([0, 0])
     call_seq_out = np.empty(c.group_len, dtype=np.int_)
-    return (directions, spread_dir, call_seq_out)
+    return (directions, spread_dir, funding_debit, call_seq_out)
 
 
 @njit
-def pre_segment_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
+def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, bt_args):
     """Prepare call_seq for either entering or exiting a position. On entry, col_0 goes short, on exit, col_1 goes short.
     Called before segment is processed. Segment refers to a single time step within a group"""
     if (directions == NEUTRAL).all():
@@ -88,8 +90,6 @@ def pre_segment_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
         c.close[c.i],
         "|positions:",
         c.last_position,
-        "|col_val:",
-        c.last_val_price,
         "|cash:",
         c.last_cash,
         "|value",
@@ -98,17 +98,14 @@ def pre_segment_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
         c.last_return,
         "|bid_ask_spread",
         bt_args.bid_ask_spread[c.i],
+        "|funding_rate",
+        bt_args.funding_rate[c.i],
+        "|funding_debit",
+        funding_debit,
         "|call_seq_out",
         call_seq_out,
     )
-    return (directions, spread_dir, call_seq_out)
-
-
-# If z_score outside entry band:
-#   if z_score above 0: go long
-#   if z_score below 0: go short
-# If z_score outside exit band:
-#   exit trade
+    return (directions, spread_dir, funding_debit, call_seq_out)
 
 
 @njit
@@ -123,10 +120,19 @@ def determine_spread_direction(current_zscore, inner_band_threshold, outer_band_
             return SHORT
         else:
             return LONG
+    return NONE
 
 
 @njit
-def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
+def update_funding_debit(c, col, funding_debit, bt_args):
+    """Update outstanding funding rate fees for `col` to debit from cash via fixed_fees on next order"""
+    funding_rate_debit = bt_args.funding_rate[c.i, col] * c.last_position[col] * c.close[c.i, col]
+    log(bt_args.logging, "funding rate debit (col=", col, "):", funding_rate_debit)
+    funding_debit[col] += funding_rate_debit
+
+
+@njit
+def flex_order_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, bt_args):
     current_zscore = bt_args.zscore[c.i]
     current_spread_direction = spread_dir[0]
     col = call_seq_out[c.call_idx % c.group_len]  # current column
@@ -134,7 +140,7 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
 
     fee_pct = bt_args.fee_pct[col]
     fee_fixed = bt_args.fee_fixed[col]
-    slippage = bt_args.bid_ask_spread[c.i, col]
+    slippage = bt_args.bid_ask_spread[c.i, col] / c.close[c.i, col]
     init_margin = bt_args.init_margin[col]
     maint_margin = bt_args.maint_margin[col]
 
@@ -168,7 +174,7 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
         trade_size = (bt_args.trade_value / trade_col_close) * leverage_factor
 
         direction = determine_spread_direction(
-            current_zscore, bt_args.z_score_thresholds[0].bt_args.z_score_thresholds[1]
+            current_zscore, bt_args.z_score_thresholds[0], bt_args.z_score_thresholds[1]
         )
 
         if direction == LONG:
@@ -178,8 +184,9 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
                 size=trade_size if col == 1 else -trade_size,
                 price=current_price,
                 fees=fee_pct,
-                fixed_fees=fee_fixed,
-                raise_reject=True,
+                fixed_fees=fee_fixed + funding_debit[col],
+                slippage=slippage,
+                raise_reject=False,
                 allow_partial=False,
             )
 
@@ -190,8 +197,9 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
                 size=trade_size if col == 0 else -trade_size,
                 price=current_price,
                 fees=fee_pct,
-                fixed_fees=fee_fixed,
-                raise_reject=True,
+                fixed_fees=fee_fixed + funding_debit[col],
+                slippage=slippage,
+                raise_reject=False,
                 allow_partial=False,
             )
 
@@ -199,9 +207,16 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
         return -1, nb.order_nothing_nb()
 
     else:  # Position is held by at least one leg
+
         # Break loop after an entry
         if c.call_idx >= c.group_len:
+            # Pay funding rate on both legs
+            update_funding_debit(c, 0, funding_debit, bt_args)
+            update_funding_debit(c, 1, funding_debit, bt_args)
             return -1, nb.order_nothing_nb()
+
+        # Pay funding rate on single leg
+        update_funding_debit(c, col, funding_debit, bt_args)
 
         current_position = c.last_position[col]
 
@@ -233,8 +248,9 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
                 size=-current_position,
                 price=current_price,
                 fees=fee_pct,
-                fixed_fees=fee_fixed,
-                raise_reject=True,
+                fixed_fees=fee_fixed + funding_debit[col],
+                slippage=slippage,
+                raise_reject=False,
             )
 
         elif current_spread_direction == SHORT and current_zscore <= bt_args.z_score_thresholds[1]:
@@ -243,8 +259,9 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
                 size=-current_position,
                 price=current_price,
                 fees=fee_pct,
-                fixed_fees=fee_fixed,
-                raise_reject=True,
+                fixed_fees=fee_fixed + funding_debit[col],
+                slippage=slippage,
+                raise_reject=False,
             )
 
         log(bt_args.logging, "Will not exit")
@@ -252,7 +269,7 @@ def flex_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
 
 
 @njit
-def post_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
+def post_order_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, bt_args):
     if c.order_result.status == enums.OrderStatus.Filled:
         if directions[c.col] == NEUTRAL:
             # Entering a position
@@ -281,6 +298,8 @@ def post_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
             c.order_result.size * c.order_result.price,
             "fees=",
             c.order_result.fees,
+            "slippage=",
+            abs(c.order_result.price - c.close[c.i, c.col]) * c.order_result.size,
             ")",
         )
 
@@ -292,6 +311,9 @@ def post_order_func_nb(c, directions, spread_dir, call_seq_out, bt_args):
                 spread_dir[0] = LONG
         elif (directions == NEUTRAL).all():
             spread_dir[0] = NEUTRAL
+
+        # Reset funding debit for the filled column
+        funding_debit[c.col] = 0
     else:
         log(bt_args.logging, c.order_result.status)
         log(bt_args.logging, c.order_result.status_info)
