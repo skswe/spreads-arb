@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from cryptomart.feeds import FundingRateFeed, OHLCVFeed, TSFeedBase
 from IPython.display import display
 
-from .enums import Exchange, InstrumentType, Interval, OHLCVColumn, SpreadColumn, Symbol
+from .enums import Exchange, InstrumentType, Interval, OHLCVColumn, SpreadColumn
 
 client = cm.Client(quiet=True)
 
@@ -30,7 +30,7 @@ class Spread(TSFeedBase):
     @classmethod
     def from_api(
         cls,
-        symbol: Symbol,
+        symbol: str,
         exchanges: List[Exchange],
         starttime: tuple[int],
         endtime: tuple[int],
