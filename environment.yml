@@ -11,8 +11,6 @@ dependencies:
   - black
 pip:
   - vectorbt
-  - matplotlib
   - google-cloud-bigquery
   - google-cloud-storage
-  - numba
 prefix: /usr/local/anaconda3/envs/spread-arb
