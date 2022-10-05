@@ -9,8 +9,8 @@ dependencies:
   - pytest
   - jupyter
   - black
-pip:
-  - vectorbt
-  - google-cloud-bigquery
-  - google-cloud-storage
+  - pip:
+    - vectorbt
+    - google-cloud-bigquery
+    - google-cloud-storage
 prefix: /usr/local/anaconda3/envs/spread-arb
