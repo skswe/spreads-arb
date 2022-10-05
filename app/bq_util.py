@@ -2,11 +2,16 @@
 
 import os
 
+import dotenv
 import pandas as pd
-from cryptomart import Exchange, InstrumentType, Symbol
+from cryptomart import Exchange, InstrumentType
 from google.api_core.exceptions import GoogleAPIError
 from google.cloud.bigquery import Client, Dataset, QueryJob, Table
 from pyutil.cache import cached
+
+dotenv.load_dotenv()
+
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.environ["BQ_CRED"]
 
 # Requires $GOOGLE_APPLICATION_CREDENTIALS to be set
 client = Client()
@@ -23,16 +28,15 @@ def get_dataset(exchange: Exchange) -> Dataset:
     return client.get_dataset(f"{exchange}_order_book")
 
 
-def get_table(exchange: Exchange, symbol: Symbol, inst_type: InstrumentType, legacy=False) -> Table:
+def get_table(exchange: Exchange, symbol: str, inst_type: InstrumentType, legacy=False) -> Table:
     """Get reference to a order book table
 
     Args:
         exchange (Exchange): exchange
-        symbol (Symbol): symbol
+        symbol (str): symbol
         inst_type (InstrumentType): instrument type
         legacy (bool, optional): If True, use legacy table name (uppercase inst_type). Defaults to False.
     """
-    assert symbol in Symbol
     assert inst_type in InstrumentType
     if legacy:
         inst_type = inst_type.upper()
@@ -40,12 +44,12 @@ def get_table(exchange: Exchange, symbol: Symbol, inst_type: InstrumentType, leg
     return client.get_table(f"{dataset.dataset_id}.{symbol}_{inst_type}")
 
 
-def run_query(exchange: Exchange, symbol: Symbol, inst_type: InstrumentType, qry: str) -> pd.DataFrame:
+def run_query(exchange: Exchange, symbol: str, inst_type: InstrumentType, qry: str) -> pd.DataFrame:
     """Run query against a single order book table.
 
     Args:
         exchange (Exchange): exchange
-        symbol (Symbol): symbol
+        symbol (str): symbol
         inst_type (InstrumentType): inst_type
         qry (str): SQL query to run against the table. Use {table_id} in the query string to reference the table.
     """
@@ -55,12 +59,12 @@ def run_query(exchange: Exchange, symbol: Symbol, inst_type: InstrumentType, qry
     return pd.DataFrame(dict(row) for row in result)
 
 
-def migrate_table(exchange: Exchange, symbol: Symbol, inst_type: InstrumentType):
+def migrate_table(exchange: Exchange, symbol: str, inst_type: InstrumentType):
     """Migrate legacy table structure to new table structure
 
     Args:
         exchange (Exchange): exchange
-        symbol (Symbol): symbol
+        symbol (str): symbol
         inst_type (InstrumentType): instrument type
     """
     target_table = get_table(exchange, symbol, inst_type)
@@ -86,12 +90,12 @@ def migrate_table(exchange: Exchange, symbol: Symbol, inst_type: InstrumentType)
 @cached(
     os.path.join(os.getenv("SA_CACHE_PATH", "/tmp/cache"), "bid_ask_spread"), path_seperators=["exchange", "inst_type"]
 )
-def get_bid_ask_spread(exchange: Exchange, symbol: Symbol, inst_type: InstrumentType, **cache_kwargs) -> pd.DataFrame:
+def get_bid_ask_spread(exchange: Exchange, symbol: str, inst_type: InstrumentType, **cache_kwargs) -> pd.DataFrame:
     """Get daily bid-ask spread averages from order book table
 
     Args:
         exchange (Exchange): exchange
-        symbol (Symbol): symbol
+        symbol (str): symbol
         inst_type (InstrumentType): instrument type
     """
     qry = """
@@ -143,14 +147,12 @@ def get_bid_ask_spread(exchange: Exchange, symbol: Symbol, inst_type: Instrument
     os.path.join(os.getenv("SA_CACHE_PATH", "/tmp/cache"), "order_book_stats"),
     path_seperators=["exchange", "inst_type"],
 )
-def get_order_book_stats(
-    exchange: Exchange, symbol: Symbol, inst_type: InstrumentType, **cache_kwargs
-) -> pd.DataFrame:
+def get_order_book_stats(exchange: Exchange, symbol: str, inst_type: InstrumentType, **cache_kwargs) -> pd.DataFrame:
     """Get gaps and first_date from order book table
 
     Args:
         exchange (Exchange): exchange
-        symbol (Symbol): symbol
+        symbol (str): symbol
         inst_type (InstrumentType): instrument type
     """
     qry = """

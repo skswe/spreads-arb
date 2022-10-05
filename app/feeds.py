@@ -7,7 +7,7 @@ import plotly.graph_objects as go
 from cryptomart.feeds import FundingRateFeed, OHLCVFeed, TSFeedBase
 from IPython.display import display
 
-from .enums import Exchange, InstrumentType, Interval, OHLCVColumn, SpreadColumn, Symbol
+from .enums import Exchange, InstrumentType, Interval, OHLCVColumn, SpreadColumn
 
 client = cm.Client(quiet=True)
 
@@ -30,7 +30,7 @@ class Spread(TSFeedBase):
     @classmethod
     def from_api(
         cls,
-        symbol: Symbol,
+        symbol: str,
         exchanges: List[Exchange],
         starttime: tuple[int],
         endtime: tuple[int],
@@ -94,12 +94,11 @@ class Spread(TSFeedBase):
         )
 
         if fillna:
-            self.ohlcv_list[0].bid_ask_spread.fillna(
-                self.ohlcv_list[0].bid_ask_spread.expanding(1).mean(), inplace=True
-            )
-            self.ohlcv_list[1].bid_ask_spread.fillna(
-                self.ohlcv_list[1].bid_ask_spread.expanding(1).mean(), inplace=True
-            )
+            for x in range(len(self.ohlcv_list)):
+                self.ohlcv_list[x].bid_ask_spread.fillna(
+                    self.ohlcv_list[x].bid_ask_spread.expanding(1).mean(), inplace=True
+                )
+                self.ohlcv_list[x].bid_ask_spread.fillna(self.ohlcv_list[x].bid_ask_spread.mean(), inplace=True)
 
     def add_funding_rate(self, funding_rate_a: FundingRateFeed, funding_rate_b: FundingRateFeed, fillna=True):
         """Add funding rate feeds to underlying OHLCVFeeds"""
@@ -126,12 +125,7 @@ class Spread(TSFeedBase):
             self.ohlcv_list[1].funding_rate.fillna(self.ohlcv_list[1].funding_rate.expanding(1).mean(), inplace=True)
 
     def returns(self, column=SpreadColumn.close):
-        # ohlcv_a, ohlcv_b = iter(self.ohlcv_list)
-        return (
-            (((self[column] - self[column].shift(1)) / self[column].shift(1)) * 100)
-            .rename("returns")
-            .set_axis(self[self.time_column])
-        )
+        ohlcv_a, ohlcv_b = iter(self.ohlcv_list)
         return ohlcv_b.returns(column) - ohlcv_a.returns(column)
 
     def zscore(self, column=SpreadColumn.close, period=30):

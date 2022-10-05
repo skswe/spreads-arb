@@ -1,0 +1,16 @@
+name: spread-arb
+channels:
+  - defaults
+dependencies:
+  - numpy
+  - pandas
+  - requests
+  - python=3.9.12
+  - pytest
+  - jupyter
+  - black
+  - pip:
+    - vectorbt
+    - google-cloud-bigquery
+    - google-cloud-storage
+prefix: /usr/local/anaconda3/envs/spread-arb
