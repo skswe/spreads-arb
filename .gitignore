@@ -6,5 +6,5 @@ tmp
 constants
 bigquery_cred.json
 *.csv
-!run_backtest.ipynb
 .env
+logs/

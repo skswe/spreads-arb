@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from concurrent.futures import ThreadPoolExecutor
 
@@ -7,13 +8,19 @@ import pandas as pd
 from cryptomart.errors import NotSupportedError
 from cryptomart.exchanges.base import ExchangeAPIBase
 from pyutil.dicts import format_dict
+from pyutil.misc import make_timestamped_dir, unique_file_name
 
-logger = logging.getLogger(f"cryptomart.{__name__}")
+from app.globals import BLACKLISTED_SYMBOLS
 
+print(__name__)
+main_logger = logging.getLogger(f"cryptomart")
+LOG_DIR = make_timestamped_dir(f"logs/pull_spreads")
+main_log_file = unique_file_name(os.path.join(LOG_DIR, "main.log"))
+main_logger.addHandler(logging.FileHandler(main_log_file))
 
 data_control = {
     cm.Exchange.BINANCE: {
-        "enabled": False,
+        "enabled": True,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
@@ -21,39 +28,39 @@ data_control = {
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.SPOT: {
-                "enabled": True,
+                "enabled": False,
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.QUARTERLY: {"enabled": False},
             cm.InstrumentType.MONTHLY: {"enabled": False},
         },
         cm.enums.Interface.FUNDING_RATE: {
-            "enabled": True,
+            "enabled": False,
             "cache_kwargs": {"disabled": False, "refresh": False},
         },
     },
     cm.Exchange.BITMEX: {
-        "enabled": False,
+        "enabled": True,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
                 "enabled": True,
-                "cache_kwargs": {"disabled": False, "refresh": False},
+                "cache_kwargs": {"disabled": False, "refresh": True},
             },
             cm.InstrumentType.SPOT: {
-                "enabled": True,
+                "enabled": False,
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.QUARTERLY: {"enabled": False},
             cm.InstrumentType.MONTHLY: {"enabled": False},
         },
         cm.enums.Interface.FUNDING_RATE: {
-            "enabled": True,
+            "enabled": False,
             "cache_kwargs": {"disabled": False, "refresh": False},
         },
     },
     cm.Exchange.BYBIT: {
-        "enabled": False,
+        "enabled": True,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
@@ -61,59 +68,19 @@ data_control = {
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.SPOT: {
-                "enabled": True,
+                "enabled": False,
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.QUARTERLY: {"enabled": False},
             cm.InstrumentType.MONTHLY: {"enabled": False},
         },
         cm.enums.Interface.FUNDING_RATE: {
-            "enabled": True,
-            "cache_kwargs": {"disabled": False, "refresh": False},
-        },
-    },
-    cm.Exchange.COINFLEX: {
-        "enabled": False,
-        cm.enums.Interface.OHLCV: {
-            "enabled": True,
-            cm.InstrumentType.PERPETUAL: {
-                "enabled": True,
-                "cache_kwargs": {"disabled": False, "refresh": False},
-            },
-            cm.InstrumentType.SPOT: {
-                "enabled": True,
-                "cache_kwargs": {"disabled": False, "refresh": False},
-            },
-            cm.InstrumentType.QUARTERLY: {"enabled": False},
-            cm.InstrumentType.MONTHLY: {"enabled": False},
-        },
-        cm.enums.Interface.FUNDING_RATE: {
-            "enabled": True,
-            "cache_kwargs": {"disabled": False, "refresh": False},
-        },
-    },
-    cm.Exchange.FTX: {
-        "enabled": False,
-        cm.enums.Interface.OHLCV: {
-            "enabled": True,
-            cm.InstrumentType.PERPETUAL: {
-                "enabled": True,
-                "cache_kwargs": {"disabled": False, "refresh": False},
-            },
-            cm.InstrumentType.SPOT: {
-                "enabled": True,
-                "cache_kwargs": {"disabled": False, "refresh": False},
-            },
-            cm.InstrumentType.QUARTERLY: {"enabled": False},
-            cm.InstrumentType.MONTHLY: {"enabled": False},
-        },
-        cm.enums.Interface.FUNDING_RATE: {
-            "enabled": True,
+            "enabled": False,
             "cache_kwargs": {"disabled": False, "refresh": False},
         },
     },
     cm.Exchange.GATEIO: {
-        "enabled": False,
+        "enabled": True,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
@@ -121,19 +88,19 @@ data_control = {
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.SPOT: {
-                "enabled": True,
+                "enabled": False,
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.QUARTERLY: {"enabled": False},
             cm.InstrumentType.MONTHLY: {"enabled": False},
         },
         cm.enums.Interface.FUNDING_RATE: {
-            "enabled": True,
+            "enabled": False,
             "cache_kwargs": {"disabled": False, "refresh": False},
         },
     },
     cm.Exchange.KUCOIN: {
-        "enabled": False,
+        "enabled": True,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
@@ -141,19 +108,19 @@ data_control = {
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.SPOT: {
-                "enabled": True,
+                "enabled": False,
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.QUARTERLY: {"enabled": False},
             cm.InstrumentType.MONTHLY: {"enabled": False},
         },
         cm.enums.Interface.FUNDING_RATE: {
-            "enabled": True,
+            "enabled": False,
             "cache_kwargs": {"disabled": False, "refresh": False},
         },
     },
     cm.Exchange.OKEX: {
-        "enabled": False,
+        "enabled": True,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
@@ -161,14 +128,14 @@ data_control = {
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.SPOT: {
-                "enabled": True,
+                "enabled": False,
                 "cache_kwargs": {"disabled": False, "refresh": False},
             },
             cm.InstrumentType.QUARTERLY: {"enabled": False},
             cm.InstrumentType.MONTHLY: {"enabled": False},
         },
         cm.enums.Interface.FUNDING_RATE: {
-            "enabled": True,
+            "enabled": False,
             "cache_kwargs": {"disabled": False, "refresh": False},
         },
     },
@@ -176,19 +143,23 @@ data_control = {
 
 
 def pull_one_exchange(exchange_name, exchange_inst: ExchangeAPIBase):
+    exchange_logger = logging.getLogger(f"cryptomart.{exchange_name}")
+    log_file = unique_file_name(os.path.join(LOG_DIR, f"{exchange_name}.log"))
+    exchange_logger.addHandler(logging.FileHandler(log_file))
+
     if not data_control[exchange_name]["enabled"]:
-        logger.info(f"Skipping exchange: {exchange_name}")
+        exchange_logger.info(f"Skipping exchange: {exchange_name}")
         return
 
     all_ohlcv = pd.DataFrame()
     all_funding = pd.DataFrame()
     try:
         if data_control[exchange_name]["ohlcv"]["enabled"]:
-            logger.info(f"Pulling data for {exchange_name}")
-            logger.info(f"Pulling ohlcv for {exchange_name}")
+            exchange_logger.info(f"Pulling data for {exchange_name}")
+            exchange_logger.info(f"Pulling ohlcv for {exchange_name}")
             for inst_type in cm.InstrumentType:
                 if not data_control[exchange_name]["ohlcv"][inst_type]["enabled"]:
-                    logger.info(f"Skipping {inst_type} OHLCV for {exchange_name}")
+                    exchange_logger.info(f"Skipping {inst_type} OHLCV for {exchange_name}")
                     continue
 
                 try:
@@ -197,14 +168,14 @@ def pull_one_exchange(exchange_name, exchange_inst: ExchangeAPIBase):
                     continue
 
                 for cryptomart_symbol, instrument_id in instruments.items():
-                    if cryptomart_symbol == "LUNA":
+                    if cryptomart_symbol in BLACKLISTED_SYMBOLS:
                         continue
                     try:
                         ohlcv = exchange_inst.ohlcv(
                             cryptomart_symbol,
                             inst_type,
-                            starttime=(2019, 1, 1),
-                            endtime=(2022, 6, 19),
+                            starttime=(2022, 10, 10),
+                            endtime=(2023, 5, 4),
                             cache_kwargs=data_control[exchange_name]["ohlcv"][inst_type]["cache_kwargs"],
                         )
                         stats = pd.Series(
@@ -221,13 +192,13 @@ def pull_one_exchange(exchange_name, exchange_inst: ExchangeAPIBase):
                         )
                         all_ohlcv = pd.concat([all_ohlcv, stats.to_frame().T], ignore_index=True)
                     except NotSupportedError:
-                        logger.info(f"OHLCV Not supported: {exchange_name} | {inst_type}.{cryptomart_symbol}")
+                        exchange_logger.info(f"OHLCV Not supported: {exchange_name} | {inst_type}.{cryptomart_symbol}")
                         pass
         else:
-            logger.info(f"Skipping ohlcv for {exchange_name}")
+            exchange_logger.info(f"Skipping ohlcv for {exchange_name}")
 
         if data_control[exchange_name]["funding_rate"]["enabled"]:
-            logger.info(f"Pulling funding rate for {exchange_name}")
+            exchange_logger.info(f"Pulling funding rate for {exchange_name}")
 
             perp_instruments = exchange_inst.instrument_info(cm.InstrumentType.PERPETUAL, map_column="exchange_symbol")
 
@@ -253,35 +224,36 @@ def pull_one_exchange(exchange_name, exchange_inst: ExchangeAPIBase):
                     )
                     all_funding = pd.concat([all_funding, stats.to_frame().T], ignore_index=True)
                 except NotSupportedError:
-                    logger.info(f"Funding Rate Not supported: {exchange_name} | {inst_type}.{cryptomart_symbol}")
+                    exchange_logger.info(
+                        f"Funding Rate Not supported: {exchange_name} | {inst_type}.{cryptomart_symbol}"
+                    )
                     pass
         else:
-            logger.info(f"Skipping funding rate for {exchange_name}")
+            exchange_logger.info(f"Skipping funding rate for {exchange_name}")
 
-        logger.info(f"Done pulling data for {exchange_name}")
+        exchange_logger.info(f"Done pulling data for {exchange_name}")
         return {
             "ohlcv": all_ohlcv,
             "funding": all_funding,
         }
 
     except Exception as e:
-        logger.error(f"Exception occured while running for {exchange_name}: \n{e}\n", exc_info=True)
+        exchange_logger.error(f"Exception occured while running for {exchange_name}: \n{e}\n", exc_info=True)
 
 
 if __name__ == "__main__":
 
-    log_file = sys.argv[1] or "pull_all_data.log"
-    mode = sys.argv[2] or "serial"
+    log_file = "logs/pull_all_data_2.log"
+    mode = "parallel"
 
     client = cm.Client(
-        log_file=log_file,
         log_level="DEBUG",
         quiet=True,
         # Set refresh to true to pull up to date symbols. Else cached instrument_info will be used
-        cache_kwargs={"refresh": False},
+        cache_kwargs={"refresh": True},
     )
 
-    logger.info(f"Cache control: \n{format_dict(data_control)}\n")
+    main_logger.info(f"Cache control: \n{format_dict(data_control)}\n")
 
     if mode == "serial":
         for exchange_name, exchange_inst in client._exchange_instance_map.items():
@@ -292,7 +264,7 @@ if __name__ == "__main__":
                 if res["ohlcv"] is not None:
                     res["ohlcv"].to_csv(f"data/ohlcv_{exchange_name}_stats.csv", index=False)
 
-                logger.info(f"Result: \n{res}\n")
+                main_logger.info(f"Result: \n{res}\n")
 
     elif mode == "parallel":
         with ThreadPoolExecutor(max_workers=len(client._exchange_instance_map)) as executor:
@@ -302,5 +274,5 @@ if __name__ == "__main__":
                 client._exchange_instance_map.values(),
             )
 
-        logger.info("Done pulling data")
-        logger.info(f"Result: \n{res}\n")
+        main_logger.info("Done pulling data")
+        main_logger.info(f"Result: \n{res}\n")
