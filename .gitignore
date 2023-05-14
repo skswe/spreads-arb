@@ -8,3 +8,4 @@ bigquery_cred.json
 *.csv
 .env
 logs/
+data/*

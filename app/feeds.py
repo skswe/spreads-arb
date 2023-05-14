@@ -59,19 +59,25 @@ class Spread(TSFeedBase):
 
     @staticmethod
     def create_ohlcv(a: OHLCVFeed, b: OHLCVFeed):
-        def aggregate(row):
-            return pd.Series(
-                {
-                    SpreadColumn.open_time: row.open_time,
-                    SpreadColumn.open: row.open_y - row.open_x,
-                    SpreadColumn.high: row.high_y - row.high_x,
-                    SpreadColumn.low: row.low_y - row.low_x,
-                    SpreadColumn.close: row.close_y - row.close_x,
-                    SpreadColumn.volume: (row.volume_y + row.volume_x) / 2,
-                }
-            )
-
-        return a.merge(b, on="open_time").apply(aggregate, axis=1).fillna(np.nan).reset_index(drop=True)
+        x = a.merge(b, on="open_time")
+        x[SpreadColumn.open] = x.eval("open_y - open_x")
+        x[SpreadColumn.high] = x.eval("high_y - high_x")
+        x[SpreadColumn.low] = x.eval("low_y - low_x")
+        x[SpreadColumn.close] = x.eval("close_y - close_x")
+        x[SpreadColumn.volume] = x.eval("(volume_y + volume_x) / 2")
+        x = x[
+            [
+                "open_time",
+                SpreadColumn.open,
+                SpreadColumn.high,
+                SpreadColumn.low,
+                SpreadColumn.close,
+                SpreadColumn.volume,
+            ]
+        ]
+        x = x.fillna(np.nan)
+        x = x.reset_index(drop=True)
+        return x
 
     def add_bid_ask_spread(self, bid_ask_spread_a: FundingRateFeed, bid_ask_spread_b: FundingRateFeed, fillna=True):
         """Add bid ask spread feeds to underlying OHLCVFeeds"""
@@ -143,7 +149,23 @@ class Spread(TSFeedBase):
         return tuple(
             x.dropna().returns().quantile(percentile / 100, interpolation="midpoint") / 100 for x in self.ohlcv_list
         )
+        
+    def var(self, column, percentile=5):
+        return abs(self.ohlcv_list[column].dropna().returns().quantile(percentile / 100, interpolation="midpoint") / 100)
 
+    def long_var(self):
+        # Long means column 0 is short and column 1 is long
+        # Column 0 VAR should be 95th percentile (positive return)
+        # Column 1 VAR should be 5th percentile (negative return)
+        return [self.var(0, 95), self.var(1, 5)]
+
+    def short_var(self):
+        # Short means column 0 is long and column 0 is short
+        # Column 0 VAR should be 5th percentile (negative return)
+        # Column 1 VAR should be 95th percentile (positive return)
+        return [self.var(0, 5), self.var(1, 95)]
+
+    
     @property
     def underlyings(self):
         return pd.concat(

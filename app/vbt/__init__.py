@@ -1,0 +1,2 @@
+from .vbt_backtest import from_order_func_wrapper
+from .vbt_backtest_chained import from_order_func_wrapper_chained

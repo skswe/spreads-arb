@@ -1,6 +1,10 @@
 import logging
+import dotenv
 
-from . import bq_util, enums, feeds, globals, vbt_backtest
+dotenv.load_dotenv()
+
+from . import analysis_tools, bq_util, data_prep, enums, feeds, globals, vbt
+from .BacktestRunner import BacktestRunner
 from .bq_util import get_bid_ask_spread, get_order_book_stats
 from .globals import (
     BLACKLISTED_SYMBOLS,
