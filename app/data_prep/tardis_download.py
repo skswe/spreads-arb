@@ -1,18 +1,25 @@
 import asyncio
+import glob
 import itertools
 import logging
 import os
+import shutil
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from functools import cached_property
 
 import app
 import cryptomart as cm
+import nest_asyncio
+import numpy as np
 import pandas as pd
 import requests
 from tardis_dev import datasets, get_exchange_details
 
-cm_client = cm.Client()
+nest_asyncio.apply()
+
+cm_client = cm.Client(quiet=True)
 
 filehandler = logging.FileHandler("tardis_download.log", mode="w")
 logger = logging.getLogger("cryptomart")
@@ -40,65 +47,144 @@ class TardisData:
     def __init__(self):
         self.api_key = os.getenv("TARDIS_API_KEY")
         self.base_url = "https://api.tardis.dev/v1"
-        self.data_root_path = os.path.join(os.getenv("ACTIVE_DEV_PATH"), "spreads-arb", "data", "tardis")
+        self.data_root_path = os.path.join(os.getenv("ACTIVE_DEV_PATH"), "spreads-arb", "data")
+        self.tardis_data_root_path = os.path.join(self.data_root_path, "tardis")
+        self.loop = asyncio.get_event_loop()
         self.tardis_exchanges = self.exchange_map.set_index("cryptomart_exchange").iloc[:, 0].to_dict()
         self.cryptomart_exchanges = self.exchange_map.set_index("id").iloc[:, 0].to_dict()
+
         self.exchange_info = self.load_exchange_info()
+        self.instrument_info = self.load_instrument_info()
+
+        self.all_symbols = pd.concat(
+            [
+                self.get_symbols(exchange, with_spread=False).assign(exchange=exchange)
+                for exchange in self.tardis_exchanges
+            ]
+        )
+        self.all_symbols_with_spread = (
+            self.all_symbols.join(self.all_symbols, lsuffix="_x", rsuffix="_y", how="cross")
+            .pipe(lambda df: df[(df.exchange_x < df.exchange_y) & (df.cryptomart_symbol_x == df.cryptomart_symbol_y)])[
+                ["id_x", "cryptomart_symbol_x"]
+            ]
+            .rename(columns={"id_x": "id", "cryptomart_symbol_x": "cryptomart_symbol"})[["cryptomart_symbol"]]
+            .drop_duplicates()
+        )
+        logging.getLogger("tardis_dev.datasets.download").addHandler(logging.StreamHandler(sys.stdout))
+
+    def load_exchange_info(self):
+        exchange_info_futures = [get_exchange_details(exchange) for exchange in self.tardis_exchanges.values()]
+        exchange_info = self.loop.run_until_complete(asyncio.gather(*exchange_info_futures))
+        return {self.cryptomart_exchanges[info["id"]]: info for info in exchange_info}
+
+    def load_instrument_info(self):
+        return {
+            exchange: cm_client.instrument_info(exchange, "perpetual", cache_kwargs={"refresh": False})
+            for exchange in self.cryptomart_exchanges.values()
+        }
 
     @staticmethod
     def get_data_filename(exchange, data_type, date, symbol, format):
         return f"{exchange}/{data_type}/{symbol}/{date.strftime('%Y-%m-%d')}.{format}.gz"
 
-    @cached_property
-    def exchanges(self):
-        exchanges = pd.DataFrame(requests.get(f"{self.base_url}/exchanges").json())
-        exchanges = exchanges[exchanges.delisted.isna()]
-        exchanges = exchanges[exchanges.enabled]
-        exchanges = exchanges.merge(self.exchange_map)
-        return exchanges
+    def get_symbol_id(self, exchange, cryptomart_symbol, ignore_errors=False):
+        if not isinstance(cryptomart_symbol, list):
+            cryptomart_symbol = [cryptomart_symbol]
+            ret_fn = lambda x: x[0]
+        else:
+            ret_fn = lambda x: list(x)
 
-    def load_exchange_info(self):
-        return {self.cryptomart_exchanges[exchange]: get_exchange_details(exchange) for exchange in self.exchanges.id}
+        cryptomart_symbols = pd.Series(cryptomart_symbol, name="cryptomart_symbol")
 
-    def exchange_datasets(self, exchange):
-        symbols = cm_client.instrument_info(exchange, "perpetual")[["cryptomart_symbol", "exchange_symbol"]].rename(
+        symbols = self.all_symbols[self.all_symbols.exchange == exchange].merge(cryptomart_symbols, how="right")
+        if not ignore_errors and symbols.id.isna().any():
+            raise ValueError(f"{list(symbols[symbols.id.isna()].cryptomart_symbol)} not found on exchange {exchange}")
+
+        return ret_fn(symbols.id)
+
+    def get_symbols(
+        self,
+        exchange,
+        data_types=["quotes", "derivative_ticker"],
+        from_date="2023-04-10",
+        to_date="2023-05-10",
+        with_spread=True,
+    ):
+        all_symbols = pd.DataFrame(self.exchange_info[exchange]["datasets"]["symbols"]).pipe(
+            lambda df: df[
+                (df.type == "perpetual")
+                & (df.availableSince <= from_date)
+                & (df.availableTo >= to_date)
+                & (df.dataTypes.apply(lambda l: np.isin(data_types, l).all()))
+            ]
+        )[["id"]]
+        cryptomart_symbols = self.instrument_info[exchange][["cryptomart_symbol", "exchange_symbol"]].rename(
             columns={"exchange_symbol": "id"}
         )
-        return pd.DataFrame(self.exchange_info[exchange]["datasets"]["symbols"]).merge(symbols, how="inner")
-
-    def download(self, exchange, data_types=["trades"], from_date="2023-01-12", to_date="2023-05-04", symbols=None):
-        tardis_symbols = self.exchange_datasets(exchange).pipe(lambda df: df[df.availableSince <= from_date]).id
-        if symbols is None:
-            symbols = tardis_symbols
+        if not with_spread:
+            return all_symbols.merge(cryptomart_symbols)
         else:
-            instrument_info = cm_client.instrument_info(exchange, "perpetual", map_column="exchange_symbol")
-            symbols = [instrument_info[symbol] for symbol in symbols]
-            symbols = [symbol for symbol in symbols if symbol in tardis_symbols]
+            return all_symbols.merge(cryptomart_symbols).merge(self.all_symbols_with_spread)
+
+    def download(
+        self,
+        exchange,
+        data_types=["trades"],
+        from_date="2023-01-12",
+        to_date="2023-05-04",
+        symbols=None,
+        compress=False,
+        **kwargs,
+    ):
+        if symbols is None:
+            symbols = self.get_symbols(exchange, data_types, from_date, to_date, with_spread=True)
+        else:
+            all_symbols = self.get_symbols(exchange, data_types, from_date, to_date, with_spread=False)
+            symbols = all_symbols.merge(pd.Series(symbols, name="cryptomart_symbol"), how="right")
+            unavailable_symbols = symbols[symbols.id.isna()].cryptomart_symbol.unique()
+            if len(unavailable_symbols) > 0:
+                print("Warning: some symbols are not available for download", unavailable_symbols)
+            symbols = symbols.dropna()
 
         tardis_exchange = self.tardis_exchanges[exchange]
 
-        datasets.download(
+        future = datasets.download(
             exchange=tardis_exchange,
             data_types=data_types,
             from_date=from_date,
             to_date=to_date,
-            symbols=symbols,
+            symbols=list(symbols.id),
             api_key=self.api_key,
-            download_dir=self.data_root_path,
+            download_dir=self.tardis_data_root_path,
             get_filename=self.get_data_filename,
+            **kwargs,
         )
+
+        self.loop.run_until_complete(future)
+
+        if compress:
+            for data_type in data_types:
+                if data_type not in ["derivative_ticker", "quotes"]:
+                    print("No compression implemented for data type", data_type)
+                    continue
+                for symbol in symbols.cryptomart_symbol:
+                    if data_type == "derivative_ticker":
+                        self.load_ticker(exchange, symbol, from_date, to_date, compress=True)
+                    elif data_type == "quotes":
+                        self.load_quotes(exchange, symbol, from_date, to_date, compress=True)
 
     def data_iterator(self, exchange, symbol, data_type, from_date="2023-01-12", to_date="2023-05-04"):
         start_time = datetime.fromisoformat(from_date)
         end_time = datetime.fromisoformat(to_date)
         day_timedelta = timedelta(days=1)
-        tardis_symbol = self.exchange_datasets(exchange).set_index("cryptomart_symbol").loc[symbol, "id"]
+        tardis_symbol = self.get_symbol_id(exchange, symbol)
         tardis_exchange = self.tardis_exchanges[exchange]
 
         for day in range((end_time - start_time).days):
             date = start_time + day * day_timedelta
             yield os.path.join(
-                self.data_root_path, self.get_data_filename(tardis_exchange, data_type, date, tardis_symbol, "csv")
+                self.tardis_data_root_path,
+                self.get_data_filename(tardis_exchange, data_type, date, tardis_symbol, "csv"),
             )
 
     def load_trades(self, exchange, symbol, from_date="2023-01-12", to_date="2023-05-04"):
@@ -107,61 +193,111 @@ class TardisData:
             dfs.append(pd.read_csv(filename))
         return pd.concat(dfs, ignore_index=True)
 
-    def load_bas(self, exchange, symbol, from_date="2023-01-12", to_date="2023-05-04"):
+    def load_ticker(self, exchange, symbol, from_date="2023-01-12", to_date="2023-05-04", compress=False):
+        dfs = []
+        for filename in self.data_iterator(exchange, symbol, "derivative_ticker", from_date, to_date):
+            dfs.append(pd.read_csv(filename, usecols=["timestamp", "last_price"]))
+        df = pd.concat(dfs, ignore_index=True)
+        df["timestamp"] = df.timestamp.apply(lambda x: datetime.utcfromtimestamp(x / 1e6))
+        df = df.dropna()
+
+        if compress:
+            outpath = os.path.join(self.data_root_path, "tick_prices", exchange, f"{symbol}.parquet")
+            os.makedirs(os.path.dirname(outpath), exist_ok=True)
+            df.to_parquet(outpath)
+            shutil.rmtree(os.path.dirname(filename))
+
+        return df
+
+    def load_quotes(self, exchange, symbol, from_date="2023-04-10", to_date="2023-05-10", compress=False):
         dfs = []
         for filename in self.data_iterator(exchange, symbol, "quotes", from_date, to_date):
+            try:
+                dfs.append(
+                    pd.read_csv(filename, usecols=["timestamp", "ask_price", "ask_amount", "bid_price", "bid_amount"])
+                )
+            except FileNotFoundError:
+                print("skipping", exchange, symbol)
+                return
+        df = pd.concat(dfs, ignore_index=True)
+        df["timestamp"] = df.timestamp.apply(lambda x: datetime.utcfromtimestamp(x / 1e6))
+        df = df.dropna()
+        if compress:
+            print("Saving quotes for", exchange, symbol, from_date, to_date)
+            outpath = os.path.join(self.data_root_path, "tick_quotes", exchange, f"{symbol}.parquet")
+            os.makedirs(os.path.dirname(outpath), exist_ok=True)
+            df.to_parquet(outpath)
+            shutil.rmtree(os.path.dirname(filename))
 
-            def largest_spread(g):
-                g["bas"] = round(g["ask_price"] - g["bid_price"], 15)
-                return g.groupby("bas", as_index=True)[["bid_amount", "ask_amount"]].sum().iloc[:3]
-
-            df = pd.read_csv(filename, usecols=["timestamp", "ask_price", "ask_amount", "bid_price", "bid_amount"])
-            df["timestamp"] = df.timestamp.apply(lambda x: datetime.utcfromtimestamp(x / 1e6))
-            df = df.resample(timedelta(hours=1), on="timestamp").apply(largest_spread).reset_index()
-            dfs.append(df)
-
-        return pd.concat(dfs, ignore_index=True)
-
-
-def download_and_process_bas(exchange, symbols, from_date="2023-02-20", to_date="2023-05-04"):
-    tardis_exchange = td.tardis_exchanges[exchange]
-    tardis_symbols = td.exchange_datasets(exchange).set_index("cryptomart_symbol").loc[symbols, "id"]
-
-    td.download(exchange, ["quotes"], from_date, to_date, symbols)
-
-    for symbol, tardis_symbol in zip(symbols, tardis_symbols):
-        tardis_download_dir = os.path.join(td.data_root_path, tardis_exchange, "quotes", tardis_symbol)
-        logger.info(f"Processing {exchange} {symbol}")
-        bas = td.load_bas(exchange, symbol, from_date, to_date)
-
-        outpath = os.path.join(
-            os.getenv("ACTIVE_DEV_PATH"), "spreads-arb", "data", "bid_ask_spreads_1h", exchange, f"{symbol}.pkl"
-        )
-        os.makedirs(os.path.dirname(outpath), exist_ok=True)
-        bas.to_pickle(outpath)
-
-        os.remove(tardis_download_dir)
-        logger.info(f"Successfully loaded {exchange} {symbol}")
+        return df
 
 
-# if __name__ == "__main__":
-#     event_loop = asyncio.get_event_loop()
-#     td = TardisData()
-
-#     ohlcvs = app.data_prep.all_ohlcv(
-#         "2022-02-01", "2023-05-04", "interval_1h", refresh=False, identifiers=["spreads-arb-v2"]
-#     )
-#     ohlcvs = ohlcvs[ohlcvs.missing_rows <= 0]
-#     ohlcvs = ohlcvs.reset_index()[["exchange", "symbol"]]
-
-#     for exchange in ohlcvs.exchange.unique():
-#         symbols = ohlcvs[ohlcvs.exchange == exchange].symbol.unique()
-#         download_and_process_bas(exchange, symbols)
+def create_exchange_dataframe(include_inst_type=False):
+    if not include_inst_type:
+        return pd.DataFrame(index=pd.MultiIndex.from_arrays([[], []], names=["exchange", "symbol"]))
+    else:
+        return pd.DataFrame(index=pd.MultiIndex.from_arrays([[], [], []], names=["exchange", "inst_type", "symbol"]))
 
 
-td = TardisData()
+def get_cryptomart_data_iterator(base_path, filter_list=None, show_progress=False):
+    """Iterates through directory structure `base_path/exchange/symbol` and returns exchange, symbol, filepath"""
+    glob_path = os.path.join(base_path, "*", "*")
+    filepaths = glob.glob(glob_path)
 
-try:
-    td.download("binance", ["quote"], "2022-02-20", "2023-05-04", ["BTC", "ETH"])
-except Exception as e:
-    print(e)
+    def filter_filepaths(filepath):
+        *_, exchange, filename = filepath.split(os.path.sep)
+        symbol = os.path.splitext(filename)[0]
+        if (exchange, symbol) in filter_list:
+            return True
+        else:
+            return False
+
+    if filter_list is not None:
+        filepaths = list(filter(filter_filepaths, filepaths))
+
+    length = int(len(filepaths) / 10) * 10
+
+    for i, filepath in enumerate(filepaths):
+        if show_progress:
+            if ((i / length) / 0.1) % 1 == 0:
+                print(f"Progress: {(i / length) * 100:.2f}%")
+        *_, exchange, filename = filepath.split(os.path.sep)
+        symbol = os.path.splitext(filename)[0]
+        yield exchange, symbol, filepath
+
+
+def process_all_symbols():
+    td = TardisData()
+
+    def worker_fn(exchange, symbol):
+        try:
+            tardis_symbol = td.exchange_datasets(exchange).set_index("cryptomart_symbol").at[symbol, "id"]
+        except KeyError:
+            print(f"Skipping {exchange} {symbol}")
+
+        print(f"Processing {exchange} {symbol}")
+        try:
+            bas = td.load_bas(exchange, symbol, "2023-02-20", "2023-05-04")
+
+            outpath = os.path.join(
+                os.getenv("ACTIVE_DEV_PATH"), "spreads-arb", "data", "bid_ask_spreads_1h", exchange, f"{symbol}.pkl"
+            )
+            os.makedirs(os.path.dirname(outpath), exist_ok=True)
+            bas.to_pickle(outpath)
+
+            tardis_exchange = td.tardis_exchanges[exchange]
+            shutil.rmtree(
+                os.path.join(td.tardis_data_root_path, tardis_exchange, "quotes", tardis_symbol), ignore_errors=True
+            )
+            print(f"Done {exchange} {symbol}")
+        except Exception as e:
+            print(e)
+            print(f"Failed {exchange} {symbol}")
+
+    params = []
+    for exchange in td.tardis_exchanges:
+        all_symbols = td.get_symbols(exchange, ["quotes"], with_spread=True)
+        params.extend([(exchange, symbol) for symbol in all_symbols.cryptomart_symbol])
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        executor.map(lambda p: worker_fn(*p), params)

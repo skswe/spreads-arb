@@ -1,7 +1,6 @@
 __pycache__
 .pytest_cache
 *.pyc
-*.ipynb
 tmp
 constants
 bigquery_cred.json
@@ -9,3 +8,4 @@ bigquery_cred.json
 .env
 logs/
 data/*
+*.ipynb

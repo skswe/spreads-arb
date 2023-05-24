@@ -1,2 +1,4 @@
-from .vbt_backtest import from_order_func_wrapper
-from .vbt_backtest_chained import from_order_func_wrapper_chained
+from .vbt_backtest import from_order_func_wrapper as non_chained
+from .vbt_backtest_chained import from_order_func_wrapper_chained as chained
+from .vbt_bt_chained_acc_slip import from_order_func_wrapper_chained as chained_acc_slip
+from .vbt_bt_quotes import from_order_func_wrapper_chained as chained_quotes

@@ -18,8 +18,8 @@ LOG_DIR = make_timestamped_dir(f"logs/pull_spreads")
 main_log_file = unique_file_name(os.path.join(LOG_DIR, "main.log"))
 main_logger.addHandler(logging.FileHandler(main_log_file))
 
-START = "2022-10-10"
-END = "2023-05-04"
+START = "2023-04-14"
+END = "2023-05-14"
 GRANULARITY = cm.Interval.interval_1h
 
 data_control = {
@@ -104,7 +104,7 @@ data_control = {
         },
     },
     cm.Exchange.KUCOIN: {
-        "enabled": True,
+        "enabled": False,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {

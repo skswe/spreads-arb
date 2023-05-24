@@ -9,7 +9,9 @@ from app.data_prep.real import all_bid_ask_spreads, all_funding_rates, all_ohlcv
 from app.feeds import Spread
 
 
-def create_spreads(ohlcvs, fee_info, funding_rates=None, bas=None) -> pd.DataFrame:
+def create_spreads(ohlcvs, fee_info, funding_rates=None, bas=None, bas_type="sum") -> pd.DataFrame:
+    assert bas_type in ["sum", "mean"]
+    
     instrument_data = ohlcvs.copy()
 
     if funding_rates is not None:
@@ -51,12 +53,17 @@ def create_spreads(ohlcvs, fee_info, funding_rates=None, bas=None) -> pd.DataFra
             spread.add_funding_rate(fr_a, fr_b)
 
         if bas is not None:
-            bid_ask_a = pickle.loads(bas.at[indexer_a, "bid_ask_spread"])
-            bid_ask_b = pickle.loads(bas.at[indexer_b, "bid_ask_spread"])
-            spread.add_bid_ask_spread(bid_ask_a, bid_ask_b)
-            spreads.at[indexer, (f"avg_ba_spread_{s}" for s in ("a", "b"))] = set(
-                x.bid_ask_spread.mean() for x in (bid_ask_a, bid_ask_b)
-            )
+            if bas_type == "mean":
+                bid_ask_a = pickle.loads(bas.at[indexer_a, "bid_ask_spread"])
+                bid_ask_b = pickle.loads(bas.at[indexer_b, "bid_ask_spread"])
+                spread.add_bid_ask_spread(bid_ask_a, bid_ask_b)
+                spreads.at[indexer, (f"avg_ba_spread_{s}" for s in ("a", "b"))] = set(
+                    x.bid_ask_spread.mean() for x in (bid_ask_a, bid_ask_b)
+                )
+            elif bas_type == "sum":
+                bid_ask_a = pickle.loads(bas.at[indexer_a, "slippage"])
+                bid_ask_b = pickle.loads(bas.at[indexer_b, "slippage"])
+                spread.add_bid_ask_spread(bid_ask_a, bid_ask_b, type="sum")
 
         spreads.at[indexer, "spread"] = pickle.dumps(spread)
         spreads.at[

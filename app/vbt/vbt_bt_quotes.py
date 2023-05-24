@@ -61,8 +61,10 @@ BacktestArgs = namedtuple(
         "fee_pct",
         "fee_fixed",
         "zscore",
-        "funding_rate",
-        "bid_ask_spread",
+        "bid_prices",
+        "ask_prices",
+        "bid_sizes",
+        "ask_sizes",
         "logging",
         "profitable_only",
     ],
@@ -100,6 +102,54 @@ def where(cond, a, b):
         else:
             out[i] = b[i]
     return out
+
+
+@njit
+def get_orderbook(c, bt_args, col, direction):
+    # shape: (2,)
+    leg_0_size = bt_args.bid_sizes[c.i, col] if direction == LONG else bt_args.ask_sizes[c.i, col]
+    leg_1_size = (
+        bt_args.bid_sizes[c.i, col + int(c.group_len / 2)]
+        if direction == LONG
+        else bt_args.ask_sizes[c.i, col + int(c.group_len / 2)]
+    )
+    leg_0_price = bt_args.bid_prices[c.i, col] if direction == LONG else bt_args.ask_prices[c.i, col]
+    leg_1_price = (
+        bt_args.bid_prices[c.i, col + int(c.group_len / 2)]
+        if direction == LONG
+        else bt_args.ask_prices[c.i, col + int(c.group_len / 2)]
+    )
+    prices = np.array([leg_0_price, leg_1_price])
+    sizes = np.array([leg_0_size, leg_1_size])
+    return prices, sizes
+
+
+@njit
+def get_orderbook_parallel(c, bt_args, direction):
+    # shape: (group_len, 2)
+    leg_0_sizes = np.where(
+        direction == LONG,
+        bt_args.bid_sizes[c.i, : int(c.group_len / 2)],
+        bt_args.ask_sizes[c.i, : int(c.group_len / 2)],
+    )
+    leg_1_sizes = np.where(
+        direction == LONG,
+        bt_args.bid_sizes[c.i, int(c.group_len / 2) :],
+        bt_args.ask_sizes[c.i, int(c.group_len / 2) :],
+    )
+    leg_0_prices = np.where(
+        direction == LONG,
+        bt_args.bid_prices[c.i, : int(c.group_len / 2)],
+        bt_args.ask_prices[c.i, : int(c.group_len / 2)],
+    )
+    leg_1_prices = np.where(
+        direction == LONG,
+        bt_args.bid_prices[c.i, int(c.group_len / 2) :],
+        bt_args.ask_prices[c.i, int(c.group_len / 2) :],
+    )
+    prices = np.vstack((leg_0_prices, leg_1_prices)).T
+    sizes = np.vstack((leg_0_sizes, leg_1_sizes)).T
+    return prices, sizes
 
 
 @njit
@@ -156,7 +206,7 @@ def index_both_legs(array, spread_idx):
 
 
 @njit
-def get_entry_orders(c, funding_debit, best_spread_idx, bt_args):
+def get_entry_orders(c, best_spread_idx, bt_args):
     """Determines the size and direction of both legs of the spread when the zscore is outside the outer band"""
     log(bt_args.logging, "    +++ determining entry orders +++")
 
@@ -165,7 +215,6 @@ def get_entry_orders(c, funding_debit, best_spread_idx, bt_args):
 
     fee_pct = bt_args.fee_pct[best_spread_idx]
     fee_fixed = bt_args.fee_fixed[best_spread_idx]
-    slippage = bt_args.bid_ask_spread[c.i, best_spread_idx] / current_prices
     init_margin = bt_args.init_margin[best_spread_idx]
     maint_margin = bt_args.maint_margin[best_spread_idx]
     long_var = bt_args.long_var[best_spread_idx]
@@ -176,7 +225,11 @@ def get_entry_orders(c, funding_debit, best_spread_idx, bt_args):
     leverage_factors = 1 / ((vars * MARGIN_SAFETY_BUFFER) + maint_margin)
     leverage_factor = min(leverage_factors)
     trade_sizes = (bt_args.trade_value / current_prices) * leverage_factor
+
+    prices, sizes = get_orderbook(c, bt_args, best_spread_idx, direction)
+    trade_sizes = np.clip(trade_sizes, 0, sizes)
     trade_sizes = direction * np.array([-1, 1]) * trade_sizes
+    slippage = np.abs(prices - current_prices) / current_prices
 
     short_leg = np.argmin(trade_sizes)
     long_leg = np.argmax(trade_sizes)
@@ -184,15 +237,7 @@ def get_entry_orders(c, funding_debit, best_spread_idx, bt_args):
     log(bt_args.logging, "    direction:", direction, direction_str_map(direction))
     log(bt_args.logging, "    vars:", vars, "leverage_factors:", leverage_factors, "leverage_factor:", leverage_factor)
     log(bt_args.logging, "    trade_sizes:", trade_sizes, "short_leg:", short_leg, "long_leg", long_leg)
-    log(
-        bt_args.logging,
-        "    bt_args.trade_value:",
-        bt_args.trade_value,
-        "current_prices:",
-        current_prices,
-        "x:",
-        bt_args.trade_value / current_prices,
-    )
+    log(bt_args.logging, "    slippage:", slippage)
 
     return (
         nb.order_nb(
@@ -217,16 +262,17 @@ def get_entry_orders(c, funding_debit, best_spread_idx, bt_args):
 
 
 @njit
-def get_exit_orders(c, funding_debit, held_spread_idx, bt_args):
+def get_exit_orders(c, held_spread_idx, bt_args):
     log(bt_args.logging, "    --- determining exit orders ---")
     fee_pct = bt_args.fee_pct[held_spread_idx[0]]
     fee_fixed = bt_args.fee_fixed[held_spread_idx[0]]
     current_prices = index_both_legs(c.close[c.i], held_spread_idx[0])
-    slippage = bt_args.bid_ask_spread[c.i, held_spread_idx[0]] / current_prices
     sizes = index_both_legs(c.last_position, held_spread_idx[0])
-
     short_leg = np.argmin(-sizes)
     long_leg = np.argmax(-sizes)
+    direction = LONG if short_leg == 0 else SHORT
+    prices, _ = get_orderbook(c, bt_args, held_spread_idx[0], direction)
+    slippage = np.abs(prices - current_prices) / current_prices
 
     log(bt_args.logging, "    current_positions:", sizes)
     log(bt_args.logging, "    short_leg:", short_leg, "long_leg:", long_leg)
@@ -236,7 +282,7 @@ def get_exit_orders(c, funding_debit, held_spread_idx, bt_args):
             size=-sizes[short_leg],
             price=current_prices[short_leg],
             fees=fee_pct[short_leg],
-            fixed_fees=fee_fixed[short_leg] + funding_debit[0],
+            fixed_fees=fee_fixed[short_leg],
             slippage=slippage[short_leg],
             raise_reject=False,
         ),
@@ -263,34 +309,23 @@ def get_expected_profit_vectorized(c, bt_args):
     var = where(direction == LONG, bt_args.long_var, bt_args.short_var)
     fee_pct = bt_args.fee_pct
     fee_fixed = bt_args.fee_fixed
-    slippage = bt_args.bid_ask_spread[c.i] / current_prices
     init_margin = bt_args.init_margin
     maint_margin = bt_args.maint_margin
-
-    # debug_idx = 184
-    # print("current_zscore", current_zscore.shape, current_zscore[debug_idx])
-    # print("current_prices", current_prices.shape, current_prices[debug_idx])
-    # print("final_price", final_price.shape, final_price[debug_idx])
-    # print("fee_pct", fee_pct.shape, fee_pct[debug_idx])
-    # print("fee_fixed", fee_fixed.shape, fee_fixed[debug_idx])
-    # print("slippage", slippage.shape, slippage[debug_idx])
-    # print("maint_margin", maint_margin.shape, maint_margin[debug_idx])
-    # print("var", var.shape, var[debug_idx])
-    # print("max_vars", max_vars.shape, max_vars[debug_idx])
-
     leverage_factors = 1 / ((var * MARGIN_SAFETY_BUFFER) + maint_margin)
     leverage_factor = np.expand_dims(min_axis_1(leverage_factors), 1)
 
+    prices, sizes = get_orderbook_parallel(c, bt_args, direction)
+
     trade_sizes = (bt_args.trade_value / current_prices) * leverage_factor
+    trade_sizes = np.clip(trade_sizes, 0, sizes)
+    direction_sizer = np.stack(
+        (np.array([-1] * len(trade_sizes)), np.array([1] * len(trade_sizes)))
+    ).T * np.expand_dims(direction, 1)
+    trade_sizes = trade_sizes * direction_sizer
 
-    direction = np.expand_dims(direction, 1)
-    dirs = np.stack((np.array([-1] * len(trade_sizes)), np.array([1] * len(trade_sizes)))).T
-    trade_sizes = direction * dirs * trade_sizes
-
-    # print("leverage_factor", leverage_factors.shape, leverage_factors[debug_idx])
-    # print("trade_sizes", trade_sizes.shape, trade_sizes[debug_idx])
-    # print("direction", direction.shape, direction[debug_idx])
-    # print("dirs", dirs.shape, dirs[debug_idx])
+    slippage = np.empty_like(trade_sizes)
+    for i in range(slippage.shape[0]):
+        slippage[i, :] = np.abs(current_prices[i, :] - prices[i, :]) / current_prices[i, :]
 
     raw_profit = np.sum(trade_sizes * (final_price - current_prices), axis=1)
     entry_fees = np.abs(trade_sizes) * current_prices * fee_pct + fee_fixed
@@ -301,15 +336,6 @@ def get_expected_profit_vectorized(c, bt_args):
     total_slippage = np.sum(entry_slippage, axis=1) + np.sum(exit_slippage, axis=1)
     final_profit = (raw_profit - total_fees - total_slippage) / EXPECTED_PROFIT_FACTOR
 
-    # print("raw_profit", raw_profit.shape, raw_profit[debug_idx])
-    # print("entry_fees", entry_fees.shape, entry_fees[debug_idx])
-    # print("exit_fees", exit_fees.shape, exit_fees[debug_idx])
-    # print("total_fees", total_fees.shape, total_fees[debug_idx])
-    # print("entry_slippage", entry_slippage.shape, entry_slippage[debug_idx])
-    # print("exit_slippage", exit_slippage.shape, exit_slippage[debug_idx])
-    # print("total_slippage", total_slippage.shape, total_slippage[debug_idx])
-    # print("final_profit", final_profit.shape, final_profit[debug_idx])
-
     return final_profit
 
 
@@ -318,7 +344,6 @@ def pre_group_func_nb(c, bt_args):
     """Called before processing a group. (Group contains both legs of spread)"""
     directions = np.array([NEUTRAL] * c.group_len, dtype=np.int_)
     spread_dir = np.array([NEUTRAL])
-    funding_debit = np.array([0.0], dtype=np.float_)
     call_seq_out = np.arange(c.group_len)
     held_spread_idx = np.array([NONE])
     log(bt_args.logging, "pre_group_func_nb global variables -- ")
@@ -328,20 +353,30 @@ def pre_group_func_nb(c, bt_args):
         directions.shape,
         "|spread_dir",
         spread_dir,
-        "|funding_debit",
-        funding_debit.shape,
         "|call_seq_out",
         call_seq_out.shape,
         "|held_spread_idx",
         held_spread_idx,
     )
-    return (directions, spread_dir, funding_debit, call_seq_out, held_spread_idx)
+    return (directions, spread_dir, call_seq_out, held_spread_idx)
 
 
 @njit
-def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, held_spread_idx, bt_args):
+def pre_segment_func_nb(c, directions, spread_dir, call_seq_out, held_spread_idx, bt_args):
     """Prepare call_seq for either entering or exiting a position. On entry, col_0 goes short, on exit, col_1 goes short.
     Called before segment is processed. Segment refers to a single time step within a group"""
+    if np.isnan(bt_args.zscore[c.i]).all():
+        log(bt_args.logging, "no zscore skipping")
+        return (
+            directions,
+            spread_dir,
+            call_seq_out,
+            held_spread_idx,
+            NONE,
+            NO_ACTION,
+            (NO_ORDER, NO_ORDER),
+            (NO_ORDER, NO_ORDER),
+        )
 
     log(bt_args.logging, "-" * 100)
     log(
@@ -359,8 +394,6 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
         c.last_value,
         "|last_return",
         c.last_return,
-        "|funding_debit",
-        funding_debit[0],
         "|call_seq_out",
         call_seq_out,
     )
@@ -383,10 +416,9 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
     if best_spread_idx != NONE:
         best_spread_zscore = bt_args.zscore[c.i, best_spread_idx]
         best_spread_expected_profit = expected_profits[best_spread_idx]
-        best_spread_close = index_both_legs(c.close[c.i], best_spread_idx)
+        best_spread_price = index_both_legs(c.close[c.i], best_spread_idx)
         best_spread_position = index_both_legs(c.last_position, best_spread_idx)
-        best_spread_bas = bt_args.bid_ask_spread[c.i, best_spread_idx]
-        best_spread_fr = bt_args.funding_rate[c.i, best_spread_idx]
+
         log(
             bt_args.logging,
             "best_spread_idx",
@@ -395,22 +427,16 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
             best_spread_expected_profit,
             "|best_spread_zscore",
             best_spread_zscore,
-            "|best_spread_close",
-            best_spread_close,
+            "|best_spread_price",
+            best_spread_price,
             "|best_spread_position",
             best_spread_position,
-            "best_spread_bas",
-            best_spread_bas,
-            "best_spread_fr",
-            best_spread_fr,
         )
 
     if held_spread_idx[0] != NONE:
         held_spread_zscore = bt_args.zscore[c.i, held_spread_idx[0]]
-        held_spread_close = index_both_legs(c.close[c.i], held_spread_idx[0])
+        held_spread_price = index_both_legs(c.close[c.i], held_spread_idx[0])
         held_spread_position = index_both_legs(c.last_position, held_spread_idx[0])
-        held_spread_bas = bt_args.bid_ask_spread[c.i, held_spread_idx[0]]
-        held_spread_fr = bt_args.funding_rate[c.i, held_spread_idx[0]]
         held_spread_directions = index_both_legs(directions, held_spread_idx[0])
         log(
             bt_args.logging,
@@ -418,14 +444,10 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
             held_spread_idx[0],
             "|held_spread_zscore",
             held_spread_zscore,
-            "|held_spread_close",
-            held_spread_close,
+            "|held_spread_price",
+            held_spread_price,
             "|held_spread_position",
             held_spread_position,
-            "held_spread_bas",
-            held_spread_bas,
-            "held_spread_fr",
-            held_spread_fr,
             "held_spread_directions",
             held_spread_directions,
         )
@@ -443,24 +465,21 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
     elif spread_dir[0] == NEUTRAL and best_spread_idx != NONE:
         action = ENTRY
         sort_call_seq_for_entry(c, call_seq_out, best_spread_idx, bt_args)
-        entry_orders = get_entry_orders(c, funding_debit, best_spread_idx, bt_args)
+        entry_orders = get_entry_orders(c, best_spread_idx, bt_args)
 
     # Exit logic
     elif held_spread_idx[0] != NONE:
-        # Pay funding when position is held
-        update_funding_debit(c, funding_debit, bt_args, held_spread_idx[0])
-
         # check for liquidation
         var = bt_args.long_var[best_spread_idx] if spread_dir[0] == LONG else bt_args.short_var[best_spread_idx]
-        liq_prices = held_spread_close * (1 + (var * MARGIN_SAFETY_BUFFER) * -held_spread_directions)
+        liq_prices = held_spread_price * (1 + (var * MARGIN_SAFETY_BUFFER) * -held_spread_directions)
         for i in range(len(liq_prices)):
-            if (held_spread_directions[i] == LONG and held_spread_close[i] < liq_prices[i]) or (
-                held_spread_directions[i] == SHORT and held_spread_close[i] > liq_prices[i]
+            if (held_spread_directions[i] == LONG and held_spread_price[i] < liq_prices[i]) or (
+                held_spread_directions[i] == SHORT and held_spread_price[i] > liq_prices[i]
             ):
                 liquidated = True
                 log(bt_args.logging, "liquidated")
                 action = EXIT
-                exit_orders = get_exit_orders(c, funding_debit, held_spread_idx, bt_args)
+                exit_orders = get_exit_orders(c, held_spread_idx, bt_args)
                 break
 
         if (
@@ -470,11 +489,11 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
             sort_call_seq_for_exit(c, call_seq_out, bt_args)
             if best_spread_idx != NONE:
                 action = EXIT_AND_ENTRY
-                entry_orders = get_entry_orders(c, funding_debit, best_spread_idx, bt_args)
-                exit_orders = get_exit_orders(c, funding_debit, held_spread_idx, bt_args)
+                entry_orders = get_entry_orders(c, best_spread_idx, bt_args)
+                exit_orders = get_exit_orders(c, held_spread_idx, bt_args)
             else:
                 action = EXIT
-                exit_orders = get_exit_orders(c, funding_debit, held_spread_idx, bt_args)
+                exit_orders = get_exit_orders(c, held_spread_idx, bt_args)
 
     log(bt_args.logging, "action:", action_str_map(action))
 
@@ -484,7 +503,6 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
     return (
         directions,
         spread_dir,
-        funding_debit,
         call_seq_out,
         held_spread_idx,
         best_spread_idx,
@@ -492,20 +510,6 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
         entry_orders,
         exit_orders,
     )
-
-
-@njit
-def update_funding_debit(c, funding_debit, bt_args, held_spread_idx):
-    """Update outstanding funding rate fees for `col` to debit from cash via fixed_fees on next order"""
-
-    funding_rate = bt_args.funding_rate[c.i, held_spread_idx]
-    last_position = index_both_legs(c.last_position, held_spread_idx)
-    prices = index_both_legs(c.close[c.i], held_spread_idx)
-    funding_fee = funding_rate[0] * last_position[0] * prices[0] + funding_rate[1] * last_position[1] * prices[1]
-    if abs(funding_fee) > 1e-8:
-        log(bt_args.logging, "added funding debit", funding_fee)
-    funding_debit[0] += funding_fee
-    log(bt_args.logging, "new funding debit", funding_debit[0])
 
 
 #                                          1
@@ -525,7 +529,6 @@ def flex_order_func_nb(
     c,
     directions,
     spread_dir,
-    funding_debit,
     call_seq_out,
     held_spread_idx,
     best_spread_idx,
@@ -615,7 +618,6 @@ def post_order_func_nb(
     c,
     directions,
     spread_dir,
-    funding_debit,
     call_seq_out,
     held_spread_idx,
     best_spread_idx,
@@ -668,8 +670,7 @@ def post_order_func_nb(
                 held_spread_idx[0] = NONE
             else:
                 # Started closing a spread position
-                funding_debit[0] = 0.0
-
+                pass
         log(
             bt_args.logging,
             "post_order_func_nb: // directions that are nonzero after order",
@@ -685,14 +686,14 @@ def post_order_func_nb(
     return None
 
 
-def from_order_func_wrapper_chained(close_prices: np.ndarray, bt_args: BacktestArgs):
+def from_order_func_wrapper_chained(prices: np.ndarray, bt_args: BacktestArgs):
     log(bt_args.logging, "Run backtest with the following settings:")
     log(
         bt_args.logging,
         format_dict(
             {
                 **bt_args._asdict(),
-                "close": close_prices.shape,
+                "prices": prices.shape,
                 "long_var": bt_args.long_var.shape,
                 "short_var": bt_args.short_var.shape,
                 "init_margin": bt_args.init_margin.shape,
@@ -700,16 +701,17 @@ def from_order_func_wrapper_chained(close_prices: np.ndarray, bt_args: BacktestA
                 "fee_pct": bt_args.fee_pct.shape,
                 "fee_fixed": bt_args.fee_fixed.shape,
                 "zscore": bt_args.zscore.shape,
-                "funding_rate": bt_args.funding_rate.shape,
-                "bid_ask_spread": bt_args.bid_ask_spread.shape,
-                "zscore": bt_args.zscore.shape,
+                "bid_prices": bt_args.bid_prices.shape,
+                "ask_prices": bt_args.ask_prices.shape,
+                "bid_sizes": bt_args.bid_sizes.shape,
+                "ask_sizes": bt_args.ask_sizes.shape,
             },
         ),
     )
     # log(True, bt_args.maint_margin[0])
     # log(bt_args.logging, "=" * 100 + "\n\n")
     return vbt.Portfolio.from_order_func(
-        close_prices,
+        prices,
         flex_order_func_nb,
         bt_args,
         group_by=True,
@@ -717,7 +719,7 @@ def from_order_func_wrapper_chained(close_prices: np.ndarray, bt_args: BacktestA
         init_cash=bt_args.initial_cash,
         flexible=True,
         # max_orders = at most a buy/sell on each leg = 4 orders per tick
-        max_orders=close_prices.shape[0] * 4,
+        max_orders=prices.shape[0] * 4,
         pre_group_func_nb=pre_group_func_nb,
         pre_group_args=(bt_args,),
         pre_segment_func_nb=pre_segment_func_nb,

@@ -1,5 +1,7 @@
+import glob
 import os
 import pickle
+from concurrent.futures import ThreadPoolExecutor
 
 import cryptomart as cm
 import numpy as np
@@ -8,6 +10,7 @@ import pyutil
 import requests
 from app.enums import Exchange
 from app.errors import NotSupportedError
+from app.feeds import QuotesFeed
 from app.globals import BLACKLISTED_SYMBOLS, STUDY_INST_TYPES
 
 cm_client = cm.Client(quiet=True)
@@ -208,3 +211,70 @@ def get_fee_info(**cache_kwargs) -> pd.DataFrame:
     )
 
     return all_fee_info
+
+
+def aggregate_tardis_quotes(rule="1m") -> pd.DataFrame:
+    """Get OHLCV for all instruments"""
+    in_path = "/home/stefano/dev/active/spreads-arb/data/tick_quotes"
+    out_path = f"/home/stefano/dev/active/spreads-arb/data/tick_quotes_{rule}_agg"
+
+    def worker_fn(args):
+        i, filepath = args
+        try:
+            *_, exchange, filename = filepath.split(os.path.sep)
+            symbol = os.path.splitext(filename)[0]
+            df = pd.read_parquet(filepath).set_index("timestamp")
+            df = df.resample("60s").agg(
+                {"bid_price": "first", "bid_amount": "max", "ask_price": "first", "ask_amount": "max"}
+            )
+            df["mid_price"] = (df["bid_price"] + df["ask_price"]) / 2
+            df = df.reindex(pd.date_range("2023-03-11", "2023-05-10", freq="60s", name="timestamp")[:-1])
+            daily_close = cm_client.ohlcv(exchange, symbol, "perpetual", "2023-03-12", "2023-04-11", cache_kwargs={"refresh": True})
+            notna = daily_close.close.notna().sum()
+            print("notna", notna)
+            if notna < 20:
+                full_out_path = os.path.join(out_path, exchange, f"{symbol}.parquet")
+                os.remove(full_out_path)
+                return
+            daily_close = (
+                daily_close
+                .set_index("open_time")
+                .close.resample("60s")
+                .first()[:-1]
+            )
+            df.loc["2023-03-12":"2023-04-09", "mid_price"] = daily_close
+
+            df["filled"] = df.isna().any(axis=1)
+            df = df.fillna(method="ffill").fillna(method="bfill")
+            full_out_path = os.path.join(out_path, exchange, f"{symbol}.parquet")
+            os.makedirs(os.path.dirname(full_out_path), exist_ok=True)
+            df.to_parquet(full_out_path)
+            print(i)
+        except Exception as e:
+            print("Error", i, e, exchange, symbol)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.map(worker_fn, list(enumerate(glob.glob(os.path.join(in_path, "*", "*")))))
+
+
+def all_tardis_quotes(rule="5s", start_date="2023-04-10", end_date="2023-05-10") -> pd.DataFrame:
+    """Get OHLCV for all instruments"""
+    quotes = pd.DataFrame(index=pd.MultiIndex.from_arrays([[], [], []], names=["exchange", "inst_type", "symbol"]))
+
+    in_path = f"/home/stefano/dev/active/spreads-arb/data/tick_quotes_{rule}_agg"
+
+    def worker_fn(args):
+        i, filepath = args
+        try:
+            *_, exchange, filename = filepath.split(os.path.sep)
+            symbol = os.path.splitext(filename)[0]
+            df = pd.read_parquet(filepath)
+            df = QuotesFeed(df, exchange, symbol, "perpetual", f"interval_{rule}", rule, start_date, end_date)
+            quotes.at[(exchange, "perpetual", symbol), "quotes"] = pickle.dumps(df)
+        except Exception as e:
+            print("Error", i, e, exchange, symbol)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        executor.map(worker_fn, list(enumerate(glob.glob(os.path.join(in_path, "*", "*")))))
+
+    return quotes

@@ -1,3 +1,4 @@
+import datetime
 from typing import List
 
 import cryptomart as cm
@@ -10,6 +11,66 @@ from IPython.display import display
 from .enums import Exchange, InstrumentType, Interval, OHLCVColumn, SpreadColumn
 
 client = cm.Client(quiet=True)
+
+
+class QuotesFeed(TSFeedBase):
+    _metadata = TSFeedBase._metadata + [
+        "exchange_name",
+        "symbol",
+        "inst_type",
+        "interval",
+        "orig_starttime",
+        "orig_endtime",
+    ]
+
+    @staticmethod
+    def preprocess(df, start, end, freq):
+        df = df.reindex(pd.date_range(start, end, freq=freq)[:-1]).reset_index().rename(columns={"index": "timestamp"})
+        df["mid_price"] = (df["bid_price"] + df["ask_price"]) / 2
+        return df
+
+    def __init__(
+        self,
+        data=None,
+        exchange_name: str = "",
+        symbol: str = None,
+        inst_type: InstrumentType = None,
+        interval: Interval = None,
+        timedelta: datetime.timedelta = None,
+        starttime: datetime.datetime = None,
+        endtime: datetime.datetime = None,
+        **kwargs,
+    ):
+        if symbol is not None:
+            data = self.preprocess(data, starttime, endtime, timedelta)
+
+        super().__init__(data=data, time_column="timestamp", value_column="mid_price", timedelta=timedelta, **kwargs)
+
+        self.exchange_name = exchange_name
+        self.symbol = symbol
+        self.inst_type = inst_type
+        self.interval = interval
+        self.orig_starttime = starttime
+        self.orig_endtime = endtime
+
+    def returns(self, column="mid_price"):
+        return (
+            (((self[column] - self[column].shift(1)) / self[column].shift(1)) * 100)
+            .rename("returns")
+            .set_axis(self[self.time_column])
+        )
+
+    @property
+    def _underlying_info(self):
+        return f"ohlcv.{self.exchange_name}.{self.inst_type}.{self.symbol}"
+
+    def zscore(self, column="mid_price"):
+        s = self.set_index(self.time_column)[column]
+        return (
+            ((s - s.rolling("30D").mean()) / s.rolling("30D").std())
+            .rename("zscore")
+            .set_axis(self[self.time_column])
+        )
 
 
 class Spread(TSFeedBase):
@@ -26,6 +87,7 @@ class Spread(TSFeedBase):
         )
 
         self.ohlcv_list = [a, b]
+        self.resample_to_days = lambda: self
 
     @classmethod
     def from_api(
@@ -79,32 +141,78 @@ class Spread(TSFeedBase):
         x = x.reset_index(drop=True)
         return x
 
-    def add_bid_ask_spread(self, bid_ask_spread_a: FundingRateFeed, bid_ask_spread_b: FundingRateFeed, fillna=True):
+    @classmethod
+    def from_quotes(cls, a: QuotesFeed, b: QuotesFeed):
+        x = a.merge(b, on="timestamp")
+        x["bid_price"] = x.eval("bid_price_y - bid_price_x")
+        x["ask_price"] = x.eval("ask_price_y - ask_price_x")
+        x["mid_price"] = x.eval("mid_price_y - mid_price_x")
+        x["bid_amount"] = x.eval("(bid_amount_y + bid_amount_x) / 2")
+        x["ask_amount"] = x.eval("(ask_amount_y + ask_amount_x) / 2")
+        x = x[
+            [
+                "timestamp",
+                "bid_price",
+                "ask_price",
+                "bid_amount",
+                "ask_amount",
+                "mid_price",
+            ]
+        ]
+        x = x.fillna(np.nan)
+        x = x.reset_index(drop=True)
+        obj = cls(x, a, b)
+        obj.time_column = "timestamp"
+        obj.value_column = "mid_price"
+        obj.resample_to_days = lambda: obj.set_index(obj.time_column).resample("1d").last().reset_index()
+        return obj
+
+    def add_bid_ask_spread(
+        self, bid_ask_spread_a: FundingRateFeed, bid_ask_spread_b: FundingRateFeed, fillna=True, type="sum"
+    ):
         """Add bid ask spread feeds to underlying OHLCVFeeds"""
-        bid_ask_spread_a = bid_ask_spread_a.resample(self.ohlcv_list[0].timedelta, on="date").median()
-        bid_ask_spread_b = bid_ask_spread_b.resample(self.ohlcv_list[1].timedelta, on="date").median()
+        assert type in ["sum", "mean"]
 
-        self.ohlcv_list[0] = (
-            self.ohlcv_list[0]
-            .drop(columns="bid_ask_spread", errors="ignore")
-            .set_index(self.ohlcv_list[0].time_column)
-            .join(bid_ask_spread_a, how="left")
-            .reset_index()
-        )
-        self.ohlcv_list[1] = (
-            self.ohlcv_list[1]
-            .drop(columns="bid_ask_spread", errors="ignore")
-            .set_index(self.ohlcv_list[1].time_column)
-            .join(bid_ask_spread_b, how="left")
-            .reset_index()
-        )
+        if type == "mean":
+            bid_ask_spread_a = bid_ask_spread_a.resample(self.ohlcv_list[0].timedelta, on="date").median()
+            bid_ask_spread_b = bid_ask_spread_b.resample(self.ohlcv_list[1].timedelta, on="date").median()
 
-        if fillna:
-            for x in range(len(self.ohlcv_list)):
-                self.ohlcv_list[x].bid_ask_spread.fillna(
-                    self.ohlcv_list[x].bid_ask_spread.expanding(1).mean(), inplace=True
-                )
-                self.ohlcv_list[x].bid_ask_spread.fillna(self.ohlcv_list[x].bid_ask_spread.mean(), inplace=True)
+            self.ohlcv_list[0] = (
+                self.ohlcv_list[0]
+                .drop(columns="bid_ask_spread", errors="ignore")
+                .set_index(self.ohlcv_list[0].time_column)
+                .join(bid_ask_spread_a, how="left")
+                .reset_index()
+            )
+            self.ohlcv_list[1] = (
+                self.ohlcv_list[1]
+                .drop(columns="bid_ask_spread", errors="ignore")
+                .set_index(self.ohlcv_list[1].time_column)
+                .join(bid_ask_spread_b, how="left")
+                .reset_index()
+            )
+
+            if fillna:
+                for x in range(len(self.ohlcv_list)):
+                    self.ohlcv_list[x].bid_ask_spread.fillna(
+                        self.ohlcv_list[x].bid_ask_spread.expanding(1).mean(), inplace=True
+                    )
+                    self.ohlcv_list[x].bid_ask_spread.fillna(self.ohlcv_list[x].bid_ask_spread.mean(), inplace=True)
+        elif type == "sum":
+            self.ohlcv_list[0] = (
+                self.ohlcv_list[0]
+                .drop(columns=["bas", "bid_amount", "ask_amount"], errors="ignore")
+                .set_index(self.ohlcv_list[0].time_column)
+                .join(bid_ask_spread_a, how="left")
+                .reset_index()
+            )
+            self.ohlcv_list[1] = (
+                self.ohlcv_list[1]
+                .drop(columns=["bas", "bid_amount", "ask_amount"], errors="ignore")
+                .set_index(self.ohlcv_list[1].time_column)
+                .join(bid_ask_spread_b, how="left")
+                .reset_index()
+            )
 
     def add_funding_rate(self, funding_rate_a: FundingRateFeed, funding_rate_b: FundingRateFeed, fillna=True):
         """Add funding rate feeds to underlying OHLCVFeeds"""
@@ -132,11 +240,14 @@ class Spread(TSFeedBase):
 
     def returns(self, column=SpreadColumn.close):
         ohlcv_a, ohlcv_b = iter(self.ohlcv_list)
+        ohlcv_a = ohlcv_a.set_index(self.time_column).resample("1d").last().reset_index()
+        ohlcv_b = ohlcv_b.set_index(self.time_column).resample("1d").last().reset_index()
         return ohlcv_b.returns(column) - ohlcv_a.returns(column)
 
     def zscore(self, column=SpreadColumn.close, period=30):
+        s = self.set_index(self.time_column)[column]
         return (
-            ((self[column] - self[column].rolling(period).mean()) / self[column].rolling(period).std())
+            ((s - s.rolling(period).mean()) / s.rolling(period).std())
             .rename("zscore")
             .set_axis(self[self.time_column])
         )
@@ -149,9 +260,11 @@ class Spread(TSFeedBase):
         return tuple(
             x.dropna().returns().quantile(percentile / 100, interpolation="midpoint") / 100 for x in self.ohlcv_list
         )
-        
+
     def var(self, column, percentile=5):
-        return abs(self.ohlcv_list[column].dropna().returns().quantile(percentile / 100, interpolation="midpoint") / 100)
+        return abs(
+            self.ohlcv_list[column].dropna().returns().quantile(percentile / 100, interpolation="midpoint") / 100
+        )
 
     def long_var(self):
         # Long means column 0 is short and column 1 is long
@@ -165,11 +278,10 @@ class Spread(TSFeedBase):
         # Column 1 VAR should be 95th percentile (positive return)
         return [self.var(0, 5), self.var(1, 95)]
 
-    
     @property
     def underlyings(self):
         return pd.concat(
-            [df.set_index(SpreadColumn.open_time) for df in self.ohlcv_list],
+            [df.set_index(self.time_column) for df in self.ohlcv_list],
             keys=[df._underlying_info for df in self.ohlcv_list],
             axis=1,
         )
@@ -182,10 +294,11 @@ class Spread(TSFeedBase):
         return f"Spread({self.ohlcv_list[1]._underlying_info} - {self.ohlcv_list[0]._underlying_info})"
 
     def plot(self, *args, columns="all", kind="line", **kwargs):
+        df = self.resample_to_days()
         if kind == "ohlcv":
             return go.Figure(
                 data=go.Candlestick(
-                    x=self[SpreadColumn.open_time],
+                    x=self[self.time_column],
                     open=self[SpreadColumn.open],
                     high=self[SpreadColumn.high],
                     low=self[SpreadColumn.low],
@@ -195,10 +308,10 @@ class Spread(TSFeedBase):
             )
         else:
             if columns == "all":
-                columns = list(set(SpreadColumn._values()) - {SpreadColumn.open_time})
+                columns = list(set(SpreadColumn._values()) - {self.time_column})
             elif type(columns) == str:
                 columns = [columns]
-            fig: go.Figure = pd.DataFrame(self.set_index(SpreadColumn.open_time)[columns]).plot(
+            fig: go.Figure = pd.DataFrame(df.set_index(self.time_column)[columns]).plot(
                 *args, kind=kind, title=self._underlying_info, backend="plotly", **kwargs
             )
             fig.update_layout(
