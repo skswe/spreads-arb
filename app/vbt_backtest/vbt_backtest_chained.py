@@ -103,35 +103,6 @@ def where(cond, a, b):
 
 
 @njit
-def get_slippage(trade_sizes, bt_args, time_idx, col):
-    slippage_info = bt_args.bid_ask_spread[time_idx, col]
-    slippage = np.array([0.0, 0.0])
-
-    for leg in range(2):
-        side_idx = 1 if trade_sizes[leg] > 0 else 0
-        order_amt = abs(trade_sizes[leg])
-        
-        if order_amt == 0:
-            continue
-
-        for lv in range(3):
-            slip = slippage_info[leg * 3 + lv]
-            if slip == 0:
-                continue
-            slip_amt = slippage_info[leg * 3 + 6 * side_idx + 6 + lv]
-            leftover = max(order_amt - slip_amt, 0)
-
-            slippage[leg] += ((order_amt - leftover) / order_amt) * slip
-
-            if leftover == 0:
-                break
-
-        if leftover > 0:
-            slippage[leg] *= 1.5
-    return slippage
-
-
-@njit
 def sort_call_seq_for_entry(c, call_seq_out, best_spread_idx, bt_args):
     log(bt_args.logging, "    sorting call_seq for entry:")
     current_zscore = bt_args.zscore[c.i, best_spread_idx]
@@ -194,6 +165,7 @@ def get_entry_orders(c, funding_debit, best_spread_idx, bt_args):
 
     fee_pct = bt_args.fee_pct[best_spread_idx]
     fee_fixed = bt_args.fee_fixed[best_spread_idx]
+    slippage = bt_args.bid_ask_spread[c.i, best_spread_idx] / current_prices
     init_margin = bt_args.init_margin[best_spread_idx]
     maint_margin = bt_args.maint_margin[best_spread_idx]
     long_var = bt_args.long_var[best_spread_idx]
@@ -205,7 +177,6 @@ def get_entry_orders(c, funding_debit, best_spread_idx, bt_args):
     leverage_factor = min(leverage_factors)
     trade_sizes = (bt_args.trade_value / current_prices) * leverage_factor
     trade_sizes = direction * np.array([-1, 1]) * trade_sizes
-    slippage = get_slippage(trade_sizes, bt_args, c.i, best_spread_idx) / current_prices
 
     short_leg = np.argmin(trade_sizes)
     long_leg = np.argmax(trade_sizes)
@@ -213,7 +184,15 @@ def get_entry_orders(c, funding_debit, best_spread_idx, bt_args):
     log(bt_args.logging, "    direction:", direction, direction_str_map(direction))
     log(bt_args.logging, "    vars:", vars, "leverage_factors:", leverage_factors, "leverage_factor:", leverage_factor)
     log(bt_args.logging, "    trade_sizes:", trade_sizes, "short_leg:", short_leg, "long_leg", long_leg)
-    log(bt_args.logging, "    slippage:", slippage)
+    log(
+        bt_args.logging,
+        "    bt_args.trade_value:",
+        bt_args.trade_value,
+        "current_prices:",
+        current_prices,
+        "x:",
+        bt_args.trade_value / current_prices,
+    )
 
     return (
         nb.order_nb(
@@ -243,8 +222,8 @@ def get_exit_orders(c, funding_debit, held_spread_idx, bt_args):
     fee_pct = bt_args.fee_pct[held_spread_idx[0]]
     fee_fixed = bt_args.fee_fixed[held_spread_idx[0]]
     current_prices = index_both_legs(c.close[c.i], held_spread_idx[0])
+    slippage = bt_args.bid_ask_spread[c.i, held_spread_idx[0]] / current_prices
     sizes = index_both_legs(c.last_position, held_spread_idx[0])
-    slippage = get_slippage(sizes, bt_args, c.i, held_spread_idx[0]) / current_prices
 
     short_leg = np.argmin(-sizes)
     long_leg = np.argmax(-sizes)
@@ -284,6 +263,7 @@ def get_expected_profit_vectorized(c, bt_args):
     var = where(direction == LONG, bt_args.long_var, bt_args.short_var)
     fee_pct = bt_args.fee_pct
     fee_fixed = bt_args.fee_fixed
+    slippage = bt_args.bid_ask_spread[c.i] / current_prices
     init_margin = bt_args.init_margin
     maint_margin = bt_args.maint_margin
 
@@ -307,10 +287,6 @@ def get_expected_profit_vectorized(c, bt_args):
     dirs = np.stack((np.array([-1] * len(trade_sizes)), np.array([1] * len(trade_sizes)))).T
     trade_sizes = direction * dirs * trade_sizes
 
-    slippage = np.empty_like(trade_sizes)
-    for i in range(slippage.shape[0]):
-        slippage[i, :] = get_slippage(trade_sizes[i, :], bt_args, c.i, i) / current_prices[i, :]
-        
     # print("leverage_factor", leverage_factors.shape, leverage_factors[debug_idx])
     # print("trade_sizes", trade_sizes.shape, trade_sizes[debug_idx])
     # print("direction", direction.shape, direction[debug_idx])
@@ -366,19 +342,6 @@ def pre_group_func_nb(c, bt_args):
 def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, held_spread_idx, bt_args):
     """Prepare call_seq for either entering or exiting a position. On entry, col_0 goes short, on exit, col_1 goes short.
     Called before segment is processed. Segment refers to a single time step within a group"""
-    if np.isnan(bt_args.zscore[c.i]).all():
-        log(bt_args.logging, "no zscore skipping")
-        return (
-            directions,
-            spread_dir,
-            funding_debit,
-            call_seq_out,
-            held_spread_idx,
-            NONE,
-            NO_ACTION,
-            (NO_ORDER, NO_ORDER),
-            (NO_ORDER, NO_ORDER),
-        )
 
     log(bt_args.logging, "-" * 100)
     log(
@@ -436,8 +399,8 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
             best_spread_close,
             "|best_spread_position",
             best_spread_position,
-            # "best_spread_bas",
-            # best_spread_bas,
+            "best_spread_bas",
+            best_spread_bas,
             "best_spread_fr",
             best_spread_fr,
         )
@@ -459,8 +422,8 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
             held_spread_close,
             "|held_spread_position",
             held_spread_position,
-            # "held_spread_bas",
-            # held_spread_bas,
+            "held_spread_bas",
+            held_spread_bas,
             "held_spread_fr",
             held_spread_fr,
             "held_spread_directions",
@@ -722,7 +685,7 @@ def post_order_func_nb(
     return None
 
 
-def from_order_func_wrapper_chained(close_prices: np.ndarray, bt_args: BacktestArgs):
+def run(close_prices: np.ndarray, bt_args: BacktestArgs):
     log(bt_args.logging, "Run backtest with the following settings:")
     log(
         bt_args.logging,

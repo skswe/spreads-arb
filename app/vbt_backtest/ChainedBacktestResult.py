@@ -1,20 +1,17 @@
-import os
 import pickle
 from functools import cached_property
 
 import app
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import pyutil
 import vectorbt as vbt
-import vectorbt.portfolio
 from app import data_prep
 from app.feeds import Spread
 from IPython.display import display
 
-from .BacktestResult import BacktestResult
+from .. import data_prep
+from . import BacktestResult
 
 
 def alternating(a, b, n):
@@ -395,7 +392,7 @@ class ChainedBacktestResult(BacktestResult):
         stats["return"] = 100 * (stats["end_cash"] - self.portfolio.init_cash) / self.portfolio.init_cash
         stats["avg_trade_return"] = stats["return"] / stats["total_trades"]
         stats["return_per_timedelta"] = stats["return"] / (len(self.timestamp_map) - self.z_score_period)
-        
+
         stats["best_trade"] = pickle.dumps(self.trades.iloc[self.trades_summed["pnl_w_slip_fees"].argmax()])
         stats["worst_trade"] = pickle.dumps(self.trades.iloc[self.trades_summed["pnl_w_slip_fees"].argmin()])
 
@@ -404,12 +401,14 @@ class ChainedBacktestResult(BacktestResult):
     def batch_run(self, slippages=[1e-9, 1e-4, 5e-4, 1e-3, 5e-3, 7e-3, 8e-3], identifier="spreads-arb-v2"):
         results = []
         for slippage in slippages:
-            ohlcvs = data_prep.all_ohlcv("2022-02-01", "2023-05-04", "interval_1h", refresh=False, identifiers=[identifier])
+            ohlcvs = data_prep.all_ohlcv(
+                "2022-02-01", "2023-05-04", "interval_1h", refresh=False, identifiers=[identifier]
+            )
             ohlcvs = ohlcvs[ohlcvs.missing_rows <= 0]
-            ba_spreads = data_prep.dummy.dummy_bid_ask_spreads(ohlcvs, slippage, force_default=True)
+            ba_spreads = data_prep.dummy_bid_ask_spreads(ohlcvs, slippage, force_default=True)
             fee_info = data_prep.get_fee_info(refresh=False, identifiers=[identifier])
             spreads = data_prep.create_spreads(ohlcvs, fee_info, bas=ba_spreads)
-            
+
             res = app.BacktestRunner(
                 log_dir=None,
                 use_slippage=True,
@@ -418,18 +417,19 @@ class ChainedBacktestResult(BacktestResult):
                 z_score_thresholds=(0, 1),
                 z_score_period=500,
             ).run_chained(spreads)
-            
+
             res = res.aggregate_stats()
             res["slippage"] = slippage
-            
+
             results.append(res)
-            
+
         stats = pd.concat(results, axis=1).T
         start_columns = ["slippage", "end_cash", "return", "avg_trade_return", "return_per_timedelta"]
         end_columns = ["best_trade", "worst_trade"]
-        stats = stats.reindex(start_columns + list(set(stats.columns) - set(start_columns) - set(end_columns)) + end_columns, axis=1)
+        stats = stats.reindex(
+            start_columns + list(set(stats.columns) - set(start_columns) - set(end_columns)) + end_columns, axis=1
+        )
         return stats
-            
 
     def analyze(self):
         """Display plots, session stats, trades, orders, underlying prices"""

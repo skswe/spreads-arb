@@ -2,13 +2,14 @@ import os
 import pickle
 from datetime import datetime
 
-import app
 import numpy as np
 import pandas as pd
 import pyutil
 
-from .analysis_tools import BacktestResult, ChainedBacktestResult
-from .feeds import Spread
+from ..feeds import Spread
+from . import vbt_backtest, vbt_backtest_chained, vbt_bt_chained_acc_slip, vbt_bt_quotes
+from .BacktestResult import BacktestResult
+from .ChainedBacktestResult import ChainedBacktestResult
 
 
 class BacktestRunner:
@@ -16,7 +17,7 @@ class BacktestRunner:
         self,
         initial_cash=150000,
         trade_value=10000,
-        vbt_function=app.vbt.chained,
+        vbt_module=vbt_backtest_chained,
         z_score_period=30,
         z_score_thresholds=(0, 1),  # (entry_threshold, exit_threshold)
         use_slippage=True,
@@ -31,11 +32,11 @@ class BacktestRunner:
             slippage_type = "mean"
         else:
             if slippage_type == "sum":
-                vbt_function = app.vbt.chained_acc_slip
+                vbt_module = vbt_bt_chained_acc_slip
 
         self.initial_cash = initial_cash
         self.trade_value = trade_value
-        self.vbt_function = vbt_function
+        self.vbt_module = vbt_module
         self.z_score_period = z_score_period
         self.z_score_thresholds = z_score_thresholds
         self.use_slippage = use_slippage
@@ -65,6 +66,81 @@ class BacktestRunner:
             i += 1
         return f"{path}.log"
 
+    def create_spreads(self, ohlcvs, fee_info, funding_rates=None, bas=None, bas_type="sum") -> pd.DataFrame:
+        assert bas_type in ["sum", "mean"]
+
+        instrument_data = ohlcvs.copy()
+
+        if funding_rates is not None:
+            instrument_data = instrument_data.merge(funding_rates, left_index=True, right_index=True)
+
+        if bas is not None:
+            instrument_data = instrument_data.merge(bas, left_index=True, right_index=True)
+
+        instrument_data = instrument_data.join(fee_info).reorder_levels(instrument_data.index.names)
+
+        instrument_data_crossed = (
+            instrument_data.reset_index()
+            .merge(instrument_data.reset_index(), how="cross", suffixes=("_a", "_b"))
+            .pipe(
+                lambda df: df[
+                    (df.exchange_a < df.exchange_b) & (df.inst_type_a <= df.inst_type_b) & (df.symbol_a == df.symbol_b)
+                ]
+            )
+            .drop(columns="symbol_b")
+            .rename(columns={"symbol_a": "symbol"})
+            .reset_index(drop=True)
+        )
+
+        spreads = pd.DataFrame(
+            index=pd.MultiIndex.from_arrays(
+                [[], [], [], [], []], names=["exchange_a", "exchange_b", "inst_type_a", "inst_type_b", "symbol"]
+            )
+        )
+
+        for idx, row in instrument_data_crossed.iterrows():
+            indexer_a = (row.exchange_a, row.inst_type_a, row.symbol)
+            indexer_b = (row.exchange_b, row.inst_type_b, row.symbol)
+            indexer = (row.exchange_a, row.exchange_b, row.inst_type_a, row.inst_type_b, row.symbol)
+            spread = Spread.from_ohlcv(pickle.loads(row.ohlcv_a), pickle.loads(row.ohlcv_b))
+
+            if funding_rates is not None:
+                fr_a = pickle.loads(funding_rates.at[indexer_a, "funding_rate"])
+                fr_b = pickle.loads(funding_rates.at[indexer_b, "funding_rate"])
+                spread.add_funding_rate(fr_a, fr_b)
+
+            if bas is not None:
+                if bas_type == "mean":
+                    bid_ask_a = pickle.loads(bas.at[indexer_a, "bid_ask_spread"])
+                    bid_ask_b = pickle.loads(bas.at[indexer_b, "bid_ask_spread"])
+                    spread.add_bid_ask_spread(bid_ask_a, bid_ask_b)
+                    spreads.at[indexer, (f"avg_ba_spread_{s}" for s in ("a", "b"))] = set(
+                        x.bid_ask_spread.mean() for x in (bid_ask_a, bid_ask_b)
+                    )
+                elif bas_type == "sum":
+                    bid_ask_a = pickle.loads(bas.at[indexer_a, "slippage"])
+                    bid_ask_b = pickle.loads(bas.at[indexer_b, "slippage"])
+                    spread.add_bid_ask_spread(bid_ask_a, bid_ask_b, type="sum")
+
+            spreads.at[indexer, "spread"] = pickle.dumps(spread)
+            spreads.at[
+                indexer, "alias"
+            ] = f"{row.exchange_a[:4]}_{row.exchange_b[:4]}_{row.inst_type_a[:4]}_{row.inst_type_b[:4]}_{row.symbol}"
+            spreads.at[indexer, "volatility"] = spread.volatility()
+            spreads.at[indexer, "earliest_time"] = spread.earliest_time
+            spreads.at[indexer, "latest_time"] = spread.latest_time
+            spreads.at[indexer, "valid_rows"] = len(spread.valid_rows)
+            spreads.at[indexer, "missing_rows"] = len(spread.missing_rows)
+            spreads.at[indexer, "gaps"] = spread.gaps
+
+            fee_info_keys = ["init_margin", "maint_margin", "fee_pct", "fee_fixed"]
+            for key in ["a", "b"]:
+                spreads.at[indexer, f"fee_info_{key}"] = pickle.dumps(
+                    {k: getattr(row, f"{k}_{key}") for k in fee_info_keys}
+                )
+
+        return spreads
+
     def _run_single_spread(self, row: pd.Series):
         spread: Spread = pickle.loads(row.spread)
         alias = row.alias
@@ -92,7 +168,7 @@ class BacktestRunner:
         for key in ["init_margin", "maint_margin", "fee_pct", "fee_fixed"]:
             fee_info[key] = (fee_info_a[key], fee_info_b[key])
 
-        bt_args = app.vbt.vbt_backtest.BacktestArgs(
+        bt_args = self.vbt_module.BacktestArgs(
             initial_cash=self.initial_cash,
             trade_value=self.trade_value,
             z_score_thresholds=self.z_score_thresholds,
@@ -109,9 +185,9 @@ class BacktestRunner:
         )
         if hasattr(self, "log_dir"):
             log_file_name = os.path.join(self.log_dir, self.unique_file_name(alias))
-            bt_func = pyutil.io.redirect_stdout(log_file_name)(self.vbt_function)
+            bt_func = pyutil.io.redirect_stdout(log_file_name)(self.vbt_module.run)
         else:
-            bt_func = self.vbt_function
+            bt_func = self.vbt_module.run
         res = bt_func(close_prices, bt_args)
         res = res.replace(
             wrapper=res.wrapper.replace(
@@ -179,7 +255,7 @@ class BacktestRunner:
         fee_info_a = spreads.apply(lambda s: pd.Series(pickle.loads(s.fee_info_a)), axis=1)
         fee_info_b = spreads.apply(lambda s: pd.Series(pickle.loads(s.fee_info_b)), axis=1)
 
-        bt_args = app.vbt.vbt_backtest_chained.BacktestArgs(
+        bt_args = self.vbt_module.BacktestArgs(
             initial_cash=self.initial_cash,
             trade_value=self.trade_value,
             z_score_thresholds=self.z_score_thresholds,
@@ -198,9 +274,9 @@ class BacktestRunner:
 
         if hasattr(self, "log_dir"):
             log_file_name = os.path.join(self.log_dir, self.unique_file_name(f"{len(spreads)}_chained"))
-            bt_func = pyutil.io.redirect_stdout(log_file_name)(self.vbt_function)
+            bt_func = pyutil.io.redirect_stdout(log_file_name)(self.vbt_module.run)
         else:
-            bt_func = self.vbt_function
+            bt_func = self.vbt_module.run
         res = bt_func(close_prices, bt_args)
 
         col_0_names = np.array(
@@ -275,7 +351,7 @@ class BacktestRunner:
         fee_info_a = spreads.apply(lambda s: pd.Series(pickle.loads(s.fee_info_a)), axis=1)
         fee_info_b = spreads.apply(lambda s: pd.Series(pickle.loads(s.fee_info_b)), axis=1)
 
-        bt_args = app.vbt.vbt_bt_quotes.BacktestArgs(
+        bt_args = self.vbt_module.BacktestArgs(
             initial_cash=self.initial_cash,
             trade_value=self.trade_value,
             z_score_thresholds=self.z_score_thresholds,
@@ -296,9 +372,9 @@ class BacktestRunner:
 
         if hasattr(self, "log_dir"):
             log_file_name = os.path.join(self.log_dir, self.unique_file_name(f"{len(spreads)}_chained"))
-            bt_func = pyutil.io.redirect_stdout(log_file_name)(self.vbt_function)
+            bt_func = pyutil.io.redirect_stdout(log_file_name)(self.vbt_module.run)
         else:
-            bt_func = self.vbt_function
+            bt_func = self.vbt_module.run
         res = bt_func(mid_prices, bt_args)
 
         col_0_names = np.array(

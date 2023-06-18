@@ -3,8 +3,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import pyutil
 import vectorbt as vbt
-from app.feeds import Spread
 from IPython.display import display
+
+from ..feeds import Spread
 
 
 class BacktestResult:
@@ -14,7 +15,7 @@ class BacktestResult:
 
     def slippage(self) -> pd.DataFrame:
         """Return slippage paid by day.
-        
+
         Returns dataframe with datetime index and columns [exchange_0, exchange_1]
         """
         close_prices = self.feed.underlying_col("close").droplevel(1, axis=1).rename(columns=lambda c: c.split(".")[1])
@@ -165,29 +166,60 @@ class BacktestResult:
         orders = portfolio.orders.records_readable.sort_values("Timestamp")
         orders["col"] = portfolio.orders.records.sort_values("idx").col
         try:
-            orders["When"] = pd.concat([pd.Series(["entry", "exit"]).repeat(2)] * int(np.ceil(len(orders) / 4)), ignore_index=True).values[: len(orders)]
+            orders["When"] = pd.concat(
+                [pd.Series(["entry", "exit"]).repeat(2)] * int(np.ceil(len(orders) / 4)), ignore_index=True
+            ).values[: len(orders)]
         except ValueError:
             orders["When"] = pd.Series()
         orders = orders.rename(columns={"Price": "filled_price", "Size": "size"})
 
-        close_prices = self.feed.underlying_col("close").droplevel(1, axis=1).set_axis([0, 1], axis=1).melt(var_name="col", value_name="close", ignore_index=False).reset_index().rename(columns={"open_time": "Timestamp"})
+        close_prices = (
+            self.feed.underlying_col("close")
+            .droplevel(1, axis=1)
+            .set_axis([0, 1], axis=1)
+            .melt(var_name="col", value_name="close", ignore_index=False)
+            .reset_index()
+            .rename(columns={"open_time": "Timestamp"})
+        )
         slippage = orders.merge(close_prices)
 
         slippage["slippage"] = abs(slippage["close"] - slippage["filled_price"]) * slippage["size"]
         slippage = slippage[["Timestamp", "col", "slippage", "When"]]
-        entry_slippage = slippage[slippage.When == "entry"].rename(columns={"slippage": "entry_slippage", "Timestamp": "Entry Timestamp"}).drop(columns="When")
-        exit_slippage = slippage[slippage.When == "exit"].rename(columns={"slippage": "exit_slippage", "Timestamp": "Exit Timestamp"}).drop(columns="When")
+        entry_slippage = (
+            slippage[slippage.When == "entry"]
+            .rename(columns={"slippage": "entry_slippage", "Timestamp": "Entry Timestamp"})
+            .drop(columns="When")
+        )
+        exit_slippage = (
+            slippage[slippage.When == "exit"]
+            .rename(columns={"slippage": "exit_slippage", "Timestamp": "Exit Timestamp"})
+            .drop(columns="When")
+        )
 
         leg_trades = portfolio.trades.records_readable.sort_values("Entry Timestamp")
         leg_trades["col"] = portfolio.trades.records.sort_values("entry_idx").col
-        leg_trades = leg_trades.merge(self.feed.zscore(period=self.feed.zscore_period).rename("entry_zscore"), left_on="Entry Timestamp", right_index=True)
-        leg_trades = leg_trades.merge(self.feed.zscore(period=self.feed.zscore_period).rename("exit_zscore"), left_on="Exit Timestamp", right_index=True)
-        leg_trades = leg_trades.merge(portfolio.cash().rename("entry_cash"), left_on="Entry Timestamp", right_index=True)
+        leg_trades = leg_trades.merge(
+            self.feed.zscore(period=self.feed.zscore_period).rename("entry_zscore"),
+            left_on="Entry Timestamp",
+            right_index=True,
+        )
+        leg_trades = leg_trades.merge(
+            self.feed.zscore(period=self.feed.zscore_period).rename("exit_zscore"),
+            left_on="Exit Timestamp",
+            right_index=True,
+        )
+        leg_trades = leg_trades.merge(
+            portfolio.cash().rename("entry_cash"), left_on="Entry Timestamp", right_index=True
+        )
         leg_trades = leg_trades.merge(portfolio.cash().rename("exit_cash"), left_on="Exit Timestamp", right_index=True)
         leg_trades = leg_trades.merge(entry_slippage)
-        leg_trades = leg_trades.merge(exit_slippage, how="left") # Left merge because last trade may not be closed
-        leg_trades = leg_trades.merge(close_prices.rename(columns={"Timestamp": "Entry Timestamp"})).rename(columns={"close": "entry_price"})
-        leg_trades = leg_trades.merge(close_prices.rename(columns={"Timestamp": "Exit Timestamp"})).rename(columns={"close": "exit_price"})
+        leg_trades = leg_trades.merge(exit_slippage, how="left")  # Left merge because last trade may not be closed
+        leg_trades = leg_trades.merge(close_prices.rename(columns={"Timestamp": "Entry Timestamp"})).rename(
+            columns={"close": "entry_price"}
+        )
+        leg_trades = leg_trades.merge(close_prices.rename(columns={"Timestamp": "Exit Timestamp"})).rename(
+            columns={"close": "exit_price"}
+        )
 
         leg_trades["slippage"] = leg_trades["entry_slippage"] + leg_trades["exit_slippage"]
         leg_trades["fees"] = leg_trades["Entry Fees"] + leg_trades["Exit Fees"]
@@ -195,9 +227,8 @@ class BacktestResult:
         leg_trades["raw PnL"] = leg_trades["PnL w fees"] + leg_trades["fees"]
         leg_trades["PnL w slip"] = leg_trades["raw PnL"] - leg_trades["slippage"]
         leg_trades["PnL w slip + fees"] = leg_trades["PnL w fees"] - leg_trades["slippage"]
-        
-        return leg_trades
 
+        return leg_trades
 
     @staticmethod
     def group_trades(g: pd.DataFrame, sum_legs=False) -> pd.DataFrame:
@@ -209,7 +240,7 @@ class BacktestResult:
         status = g.Status.to_list()
         directions = g.Direction.replace("Short", -1).replace("Long", 1).to_list()
         spread_dir = 1 if directions[0] == -1 else -1
-        
+
         if (g.Status == "Closed").all():
             overall_status = "Closed"
         elif (g.Status == "Open").any():
@@ -243,7 +274,7 @@ class BacktestResult:
         exit_spread = exit_prices[1] - exit_prices[0]
         filled_entry_spread = filled_entry_prices[1] - filled_entry_prices[0]
         filled_exit_spread = filled_exit_prices[1] - filled_exit_prices[0]
-        
+
         spread_change = (exit_spread - entry_spread) * spread_dir
         filled_spread_change = (filled_exit_spread - filled_entry_spread) * spread_dir
 
@@ -292,8 +323,7 @@ class BacktestResult:
         out["start_cash"] = start_cash
         out["end_cash"] = end_cash
         return out
-    
-    
+
     @staticmethod
     def format_trade(t: pd.Series) -> str:
         """Format trade string using an aggregated trade created by `self.group_trades`"""
@@ -301,54 +331,55 @@ class BacktestResult:
         symbol = t.names[0].split(".")[-1]
         starttime = t.entry_time.strftime("%Y-%m-%d")
         endtime = t.exit_time.strftime("%Y-%m-%d")
-        
+
         # Rounding factors
         spread_rf = 4 if (abs(t.entry_spread) < 1) else 2
         price_rf = 4 if (sum([abs(x) for x in t.entry_prices]) / len(t.entry_prices)) < 1 else 2
         size_rf = 3 if (sum(t.sizes) / len(t.sizes)) < 1 else 2
-        
+
         # direction symbols
         d_sym = {-1: "\\", 1: "/"}
-        
+
         # direction strings
         d_str = {-1: "Short", 1: "Long"}
-        
+
         entry_spread = t.entry_spread
         filled_entry_spread = t.filled_entry_spread
         entry_prices = [(x) for x in t.entry_prices]
         filled_entry_prices = [(x) for x in t.filled_entry_prices]
-        
+
         entry_zscore = t.entry_zscore
         exit_zscore = t.exit_zscore
-        
+
         exit_spread = t.exit_spread
         filled_exit_spread = t.filled_exit_spread
         exit_prices = [(x) for x in t.exit_prices]
         filled_exit_prices = [(x) for x in t.filled_exit_prices]
-        
+
         spread_change = t.spread_change
-        spread_change_pct = (100 * spread_change / abs(entry_spread))
+        spread_change_pct = 100 * spread_change / abs(entry_spread)
         filled_spread_change = t.filled_spread_change
-        filled_spread_change_pct = (100 * filled_spread_change / abs(filled_entry_spread))
-        
-        trade_value = (sum(size * price for size, price in zip(t.sizes, t.entry_prices)))
+        filled_spread_change_pct = 100 * filled_spread_change / abs(filled_entry_spread)
+
+        trade_value = sum(size * price for size, price in zip(t.sizes, t.entry_prices))
         sizes = [(x) for x in t.sizes]
-        raw_pnl = (sum(t.raw_pnl))
+        raw_pnl = sum(t.raw_pnl)
         raw_returns = 100 * sum(t.raw_pnl) / trade_value
         pnl_w_slip_fees = sum(t.pnl_w_slip_fees)
         returns_w_slip_fees = 100 * sum(t.pnl_w_slip_fees) / trade_value
-        
+
         slippage = sum(t.entry_slippage) + sum(t.exit_slippage)
         slippage_pct = 100 * slippage / trade_value
         entry_slippage = sum(t.entry_slippage)
         exit_slippage = sum(t.exit_slippage)
-        
+
         fees = sum(t.total_fees)
         fee_pct = 100 * fees / trade_value
         entry_fees = sum(t.entry_fees)
         exit_fees = sum(t.exit_fees)
-        
+
         formatter = pyutil.io.BashFormatter()
+
         def add_color(x: str, x_float: float):
             if x_float > 0:
                 return formatter.format(x, "green", "black", "bold")
@@ -364,10 +395,9 @@ class BacktestResult:
                 return formatter.color(x, "light_red")
             else:
                 return formatter.color(x, "light_orange")
-            
+
         margin = 25
-        trade_info = \
-        f"""
+        trade_info = f"""
         {'-'*130}
         {'Info:':{margin}} {d_str[t.spread_dir]} {d_sym[t.spread_dir]} | {symbol} | ({exchanges[1]} - {exchanges[0]}) | {t.overall_status} | {starttime} --> {endtime} ({(t.exit_time - t.entry_time).days} days)
         {'Cash:':{margin}} {f'Start[ {t.start_cash:7.2f}]':20} End[ {t.end_cash:7.2f}]
@@ -399,17 +429,20 @@ class BacktestResult:
 
         return trade_info
 
-
     def print_all_trades(self):
         """Print formatted trades to stdout"""
         leg_trades = self.get_leg_trades()
         if len(leg_trades) == 0:
             print("No trades to show")
         else:
-            grouped_trades = leg_trades.sort_values(["Entry Timestamp", "col"]).groupby("Entry Timestamp", as_index=False).apply(self.group_trades).reset_index(level=1, drop=True)
+            grouped_trades = (
+                leg_trades.sort_values(["Entry Timestamp", "col"])
+                .groupby("Entry Timestamp", as_index=False)
+                .apply(self.group_trades)
+                .reset_index(level=1, drop=True)
+            )
             for idx, trade in grouped_trades.iterrows():
                 print(self.format_trade(trade))
-                        
 
     def aggregate_stats(self):
         stats = pd.Series()
@@ -422,8 +455,13 @@ class BacktestResult:
             stats["losing_trades"] = 0
             stats["total_trades"] = 0
             return stats
-            
-        grouped_trades = leg_trades.sort_values(["Entry Timestamp", "col"]).groupby("Entry Timestamp", as_index=False).apply(self.group_trades, sum_legs=True).reset_index(level=1, drop=True)
+
+        grouped_trades = (
+            leg_trades.sort_values(["Entry Timestamp", "col"])
+            .groupby("Entry Timestamp", as_index=False)
+            .apply(self.group_trades, sum_legs=True)
+            .reset_index(level=1, drop=True)
+        )
         stats["avg_fees"] = grouped_trades["total_fees"].mean()
         stats["avg_slippage"] = grouped_trades["total_slippage"].mean()
         stats["avg_pnl"] = grouped_trades["pnl_w_slip_fees"].mean()
@@ -431,4 +469,3 @@ class BacktestResult:
         stats["losing_trades"] = (grouped_trades["pnl_w_slip_fees"] < 0).sum()
         stats["total_trades"] = len(grouped_trades[grouped_trades.overall_status == "Closed"])
         return stats
-    

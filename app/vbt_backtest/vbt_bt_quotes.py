@@ -686,7 +686,7 @@ def post_order_func_nb(
     return None
 
 
-def from_order_func_wrapper_chained(prices: np.ndarray, bt_args: BacktestArgs):
+def run(prices: np.ndarray, bt_args: BacktestArgs):
     log(bt_args.logging, "Run backtest with the following settings:")
     log(
         bt_args.logging,

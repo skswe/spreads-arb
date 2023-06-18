@@ -6,9 +6,8 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from cryptomart.feeds import FundingRateFeed, OHLCVFeed, TSFeedBase
-from IPython.display import display
 
-from .enums import Exchange, InstrumentType, Interval, OHLCVColumn, SpreadColumn
+from .enums import Exchange, InstrumentType, Interval, SpreadColumn
 
 client = cm.Client(quiet=True)
 
@@ -67,9 +66,7 @@ class QuotesFeed(TSFeedBase):
     def zscore(self, column="mid_price"):
         s = self.set_index(self.time_column)[column]
         return (
-            ((s - s.rolling("30D").mean()) / s.rolling("30D").std())
-            .rename("zscore")
-            .set_axis(self[self.time_column])
+            ((s - s.rolling("30D").mean()) / s.rolling("30D").std()).rename("zscore").set_axis(self[self.time_column])
         )
 
 

@@ -1,25 +1,17 @@
 import asyncio
-import glob
-import itertools
 import logging
 import os
 import shutil
 import sys
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
-from functools import cached_property
 
-import app
 import cryptomart as cm
 import nest_asyncio
 import numpy as np
 import pandas as pd
-import requests
 from tardis_dev import datasets, get_exchange_details
 
 nest_asyncio.apply()
-
-cm_client = cm.Client(quiet=True)
 
 filehandler = logging.FileHandler("tardis_download.log", mode="w")
 logger = logging.getLogger("cryptomart")
@@ -32,6 +24,22 @@ logging.getLogger("tardis_dev.datasets.download").addHandler(filehandler)
 
 
 class TardisData:
+    """Class for managing Tardis data
+
+    Attributes:
+        api_key: API key for Tardis
+        base_url: Base URL for Tardis API
+        data_root_path: Root path for data storage
+        tardis_data_root_path: Root path for Tardis data storage
+        loop: Event loop for async operations
+        tardis_exchanges: Mapping of Tardis exchanges to Cryptomart exchanges
+        cryptomart_exchanges: Mapping of Cryptomart exchanges to Tardis exchanges
+        exchange_info: Exchange information for Tardis exchanges
+        instrument_info: Instrument information for Tardis exchanges
+        all_symbols: DataFrame of all symbols for Tardis exchanges
+        all_symbols_with_spread: DataFrame of symbols with spread for Tardis exchanges
+    """
+
     exchange_map = pd.DataFrame(
         [
             {
@@ -45,6 +53,10 @@ class TardisData:
     ).melt(var_name="cryptomart_exchange", value_name="id")
 
     def __init__(self):
+        """Initialize TardisData object"""
+
+        self.cm_client = cm.Client(quiet=True)
+
         self.api_key = os.getenv("TARDIS_API_KEY")
         self.base_url = "https://api.tardis.dev/v1"
         self.data_root_path = os.path.join(os.getenv("ACTIVE_DEV_PATH"), "spreads-arb", "data")
@@ -79,7 +91,7 @@ class TardisData:
 
     def load_instrument_info(self):
         return {
-            exchange: cm_client.instrument_info(exchange, "perpetual", cache_kwargs={"refresh": False})
+            exchange: self.cm_client.instrument_info(exchange, "perpetual", cache_kwargs={"refresh": False})
             for exchange in self.cryptomart_exchanges.values()
         }
 
@@ -230,74 +242,3 @@ class TardisData:
             shutil.rmtree(os.path.dirname(filename))
 
         return df
-
-
-def create_exchange_dataframe(include_inst_type=False):
-    if not include_inst_type:
-        return pd.DataFrame(index=pd.MultiIndex.from_arrays([[], []], names=["exchange", "symbol"]))
-    else:
-        return pd.DataFrame(index=pd.MultiIndex.from_arrays([[], [], []], names=["exchange", "inst_type", "symbol"]))
-
-
-def get_cryptomart_data_iterator(base_path, filter_list=None, show_progress=False):
-    """Iterates through directory structure `base_path/exchange/symbol` and returns exchange, symbol, filepath"""
-    glob_path = os.path.join(base_path, "*", "*")
-    filepaths = glob.glob(glob_path)
-
-    def filter_filepaths(filepath):
-        *_, exchange, filename = filepath.split(os.path.sep)
-        symbol = os.path.splitext(filename)[0]
-        if (exchange, symbol) in filter_list:
-            return True
-        else:
-            return False
-
-    if filter_list is not None:
-        filepaths = list(filter(filter_filepaths, filepaths))
-
-    length = int(len(filepaths) / 10) * 10
-
-    for i, filepath in enumerate(filepaths):
-        if show_progress:
-            if ((i / length) / 0.1) % 1 == 0:
-                print(f"Progress: {(i / length) * 100:.2f}%")
-        *_, exchange, filename = filepath.split(os.path.sep)
-        symbol = os.path.splitext(filename)[0]
-        yield exchange, symbol, filepath
-
-
-def process_all_symbols():
-    td = TardisData()
-
-    def worker_fn(exchange, symbol):
-        try:
-            tardis_symbol = td.exchange_datasets(exchange).set_index("cryptomart_symbol").at[symbol, "id"]
-        except KeyError:
-            print(f"Skipping {exchange} {symbol}")
-
-        print(f"Processing {exchange} {symbol}")
-        try:
-            bas = td.load_bas(exchange, symbol, "2023-02-20", "2023-05-04")
-
-            outpath = os.path.join(
-                os.getenv("ACTIVE_DEV_PATH"), "spreads-arb", "data", "bid_ask_spreads_1h", exchange, f"{symbol}.pkl"
-            )
-            os.makedirs(os.path.dirname(outpath), exist_ok=True)
-            bas.to_pickle(outpath)
-
-            tardis_exchange = td.tardis_exchanges[exchange]
-            shutil.rmtree(
-                os.path.join(td.tardis_data_root_path, tardis_exchange, "quotes", tardis_symbol), ignore_errors=True
-            )
-            print(f"Done {exchange} {symbol}")
-        except Exception as e:
-            print(e)
-            print(f"Failed {exchange} {symbol}")
-
-    params = []
-    for exchange in td.tardis_exchanges:
-        all_symbols = td.get_symbols(exchange, ["quotes"], with_spread=True)
-        params.extend([(exchange, symbol) for symbol in all_symbols.cryptomart_symbol])
-
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.map(lambda p: worker_fn(*p), params)
