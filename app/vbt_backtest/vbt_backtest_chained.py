@@ -5,7 +5,8 @@ import vectorbt as vbt
 import vectorbt.portfolio.enums as enums
 import vectorbt.portfolio.nb as nb
 from numba import njit, prange
-from pyutil.dicts import format_dict
+
+from ..util import format_dict
 
 NONE = -999999
 LONG = 1

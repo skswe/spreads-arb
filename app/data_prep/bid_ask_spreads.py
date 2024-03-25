@@ -3,13 +3,13 @@ import warnings
 
 import cryptomart as cm
 import pandas as pd
-import pyutil
+from ..util import cached
 
 from ..enums import Exchange
 from ..globals import BLACKLISTED_SYMBOLS, STUDY_INST_TYPES
 
 
-@pyutil.cache.cached("/tmp/cache/all_bid_ask_spreads", refresh=False)
+@cached("/tmp/cache/all_bid_ask_spreads", refresh=False)
 def all_bid_ask_spreads(start, end, **cache_kwargs) -> pd.DataFrame:
     """Get the bid ask spread timeseries for all instruments in the Order Book data mart"""
     cm_client = cm.Client(quiet=True)

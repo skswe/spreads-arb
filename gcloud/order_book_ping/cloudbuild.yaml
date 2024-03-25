@@ -7,7 +7,6 @@ steps:
   - -c
   - |
     gsutil -m cp -r gs://crypto-arb-resources/repositories/crypto-mart/cryptomart .
-    gsutil -m cp -r gs://crypto-arb-resources/repositories/pyutil/pyutil .
     gsutil cp gs://crypto-arb-resources/artifacts/spreads-arb/cache.tar.gz cache.tar.gz
     tar -xzf cache.tar.gz cache
     rm cache.tar.gz

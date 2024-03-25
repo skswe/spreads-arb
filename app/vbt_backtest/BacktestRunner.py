@@ -4,13 +4,12 @@ from datetime import datetime
 
 import numpy as np
 import pandas as pd
-import pyutil
 
 from ..feeds import Spread
 from . import vbt_backtest, vbt_backtest_chained, vbt_bt_chained_acc_slip, vbt_bt_quotes
 from .BacktestResult import BacktestResult
 from .ChainedBacktestResult import ChainedBacktestResult
-
+from ..util import redirect_stdout
 
 class BacktestRunner:
     def __init__(
@@ -185,7 +184,7 @@ class BacktestRunner:
         )
         if hasattr(self, "log_dir"):
             log_file_name = os.path.join(self.log_dir, self.unique_file_name(alias))
-            bt_func = pyutil.io.redirect_stdout(log_file_name)(self.vbt_module.run)
+            bt_func = redirect_stdout(log_file_name)(self.vbt_module.run)
         else:
             bt_func = self.vbt_module.run
         res = bt_func(close_prices, bt_args)
@@ -274,7 +273,7 @@ class BacktestRunner:
 
         if hasattr(self, "log_dir"):
             log_file_name = os.path.join(self.log_dir, self.unique_file_name(f"{len(spreads)}_chained"))
-            bt_func = pyutil.io.redirect_stdout(log_file_name)(self.vbt_module.run)
+            bt_func = redirect_stdout(log_file_name)(self.vbt_module.run)
         else:
             bt_func = self.vbt_module.run
         res = bt_func(close_prices, bt_args)
@@ -372,7 +371,7 @@ class BacktestRunner:
 
         if hasattr(self, "log_dir"):
             log_file_name = os.path.join(self.log_dir, self.unique_file_name(f"{len(spreads)}_chained"))
-            bt_func = pyutil.io.redirect_stdout(log_file_name)(self.vbt_module.run)
+            bt_func = redirect_stdout(log_file_name)(self.vbt_module.run)
         else:
             bt_func = self.vbt_module.run
         res = bt_func(mid_prices, bt_args)

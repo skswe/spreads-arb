@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import pyutil
+from ..util import BashFormatter
 import vectorbt as vbt
 from IPython.display import display
 
@@ -378,7 +378,7 @@ class BacktestResult:
         entry_fees = sum(t.entry_fees)
         exit_fees = sum(t.exit_fees)
 
-        formatter = pyutil.io.BashFormatter()
+        formatter = BashFormatter()
 
         def add_color(x: str, x_float: float):
             if x_float > 0:

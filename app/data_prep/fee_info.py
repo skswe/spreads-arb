@@ -3,11 +3,11 @@ import os
 import cryptomart as cm
 import numpy as np
 import pandas as pd
-import pyutil
+from ..util import cached
 import requests
 
 
-@pyutil.cache.cached("/tmp/cache/fee_margin_data", refresh=False)
+@cached("/tmp/cache/fee_margin_data", refresh=False)
 def get_fee_info(**cache_kwargs) -> pd.DataFrame:
     cm_client = cm.Client(quiet=True)
 
@@ -32,7 +32,7 @@ def get_fee_info(**cache_kwargs) -> pd.DataFrame:
     fee_info_bitmex
 
     # BYBIT
-    @pyutil.cache.cached("/tmp/cache/fee_margin_data", refresh=False, path_seperators=["exchange"])
+    @cached("/tmp/cache/fee_margin_data", refresh=False, path_seperators=["exchange"])
     def bybit_get_single_margin(exchange_symbol, exchange="bybit"):
         url = os.path.join(cm_client.bybit.base_url, "public", "linear", "risk-limit")
         params = {"symbol": exchange_symbol}
@@ -86,7 +86,7 @@ def get_fee_info(**cache_kwargs) -> pd.DataFrame:
 
     # OKEX
     # Exchange-wide taker fee: https://www.okx.com/fees
-    @pyutil.cache.cached("/tmp/cache/fee_margin_data", refresh=False, path_seperators=["exchange"])
+    @cached("/tmp/cache/fee_margin_data", refresh=False, path_seperators=["exchange"])
     def okex_get_single_margin(exchange_symbol, exchange="okex"):
         url = os.path.join(cm_client.okex.base_url, "api", "v5", "public", "position-tiers")
         params = {"instType": "SWAP", "tdMode": "isolated", "uly": exchange_symbol}

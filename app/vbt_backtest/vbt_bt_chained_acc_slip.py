@@ -5,7 +5,8 @@ import vectorbt as vbt
 import vectorbt.portfolio.enums as enums
 import vectorbt.portfolio.nb as nb
 from numba import njit, prange
-from pyutil.dicts import format_dict
+
+from ..util import format_dict
 
 NONE = -999999
 LONG = 1
@@ -110,7 +111,7 @@ def get_slippage(trade_sizes, bt_args, time_idx, col):
     for leg in range(2):
         side_idx = 1 if trade_sizes[leg] > 0 else 0
         order_amt = abs(trade_sizes[leg])
-        
+
         if order_amt == 0:
             continue
 
@@ -310,7 +311,7 @@ def get_expected_profit_vectorized(c, bt_args):
     slippage = np.empty_like(trade_sizes)
     for i in range(slippage.shape[0]):
         slippage[i, :] = get_slippage(trade_sizes[i, :], bt_args, c.i, i) / current_prices[i, :]
-        
+
     # print("leverage_factor", leverage_factors.shape, leverage_factors[debug_idx])
     # print("trade_sizes", trade_sizes.shape, trade_sizes[debug_idx])
     # print("direction", direction.shape, direction[debug_idx])

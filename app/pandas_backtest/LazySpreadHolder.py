@@ -1,12 +1,20 @@
 import numpy as np
 import pandas as pd
-import pyutil
 
 from .. import plotting
-from . import LazyDataFrameHolder
 from ..data_prep import get_fee_info
+from . import LazyDataFrameHolder
 
 fee_info = get_fee_info().sort_index()
+
+
+def fast_groupby(res):
+    """Wrap output from a groupby-apply where the result is a dictionary"""
+    if not isinstance(res, pd.DataFrame):
+        return pd.DataFrame(res.to_list())
+    else:
+        return None
+
 
 class LazySpreadHolder:
     def __init__(
@@ -225,11 +233,11 @@ class LazySpreadHolder:
         long_filter = spread[(spread.long_entry | spread.long_exit).astype(bool)]
         short_filter = spread[(spread.short_entry | spread.short_exit).astype(bool)]
 
-        long_trades = pyutil.fast_groupby(
+        long_trades = fast_groupby(
             long_filter.groupby(long_filter.reset_index(drop=True).index // 2).apply(group_trade, side="long")
         )
 
-        short_trades = pyutil.fast_groupby(
+        short_trades = fast_groupby(
             short_filter.groupby(short_filter.reset_index(drop=True).index // 2).apply(group_trade, side="short")
         )
 

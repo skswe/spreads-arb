@@ -1,5 +1,5 @@
 import datetime
-from typing import List
+from typing import Dict, List, Tuple
 
 import cryptomart as cm
 import numpy as np
@@ -91,11 +91,11 @@ class Spread(TSFeedBase):
         cls,
         symbol: str,
         exchanges: List[Exchange],
-        starttime: tuple[int],
-        endtime: tuple[int],
+        starttime: Tuple[int],
+        endtime: Tuple[int],
         inst_types: List[InstrumentType] = [InstrumentType.PERPETUAL, InstrumentType.PERPETUAL],
         interval: Interval = Interval.interval_1d,
-        cache_kwargs: dict = {},
+        cache_kwargs: Dict = {},
     ):
         assert len(exchanges) == 2, "Must provide two exchanges"
         assert len(inst_types) == 2, "Must provide two inst_types"

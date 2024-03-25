@@ -1,16 +1,14 @@
 import logging
 import os
-import sys
 from concurrent.futures import ThreadPoolExecutor
 
 import cryptomart as cm
 import pandas as pd
 from cryptomart.errors import NotSupportedError
 from cryptomart.exchanges.base import ExchangeAPIBase
-from pyutil.dicts import format_dict
-from pyutil.misc import make_timestamped_dir, unique_file_name
 
-from app.globals import BLACKLISTED_SYMBOLS
+from ..globals import BLACKLISTED_SYMBOLS
+from ..util import format_dict, make_timestamped_dir, unique_file_name
 
 print(__name__)
 main_logger = logging.getLogger(f"cryptomart")
@@ -18,9 +16,9 @@ LOG_DIR = make_timestamped_dir(f"logs/pull_spreads")
 main_log_file = unique_file_name(os.path.join(LOG_DIR, "main.log"))
 main_logger.addHandler(logging.FileHandler(main_log_file))
 
-START = "2023-04-14"
-END = "2023-05-14"
-GRANULARITY = cm.Interval.interval_1h
+START = (2022, 1, 20)
+END = (2022, 6, 20)
+GRANULARITY = cm.Interval.interval_5m
 
 data_control = {
     cm.Exchange.BINANCE: {
@@ -44,7 +42,7 @@ data_control = {
         },
     },
     cm.Exchange.BITMEX: {
-        "enabled": True,
+        "enabled": False,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
@@ -64,7 +62,7 @@ data_control = {
         },
     },
     cm.Exchange.BYBIT: {
-        "enabled": True,
+        "enabled": False,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
@@ -84,7 +82,7 @@ data_control = {
         },
     },
     cm.Exchange.GATEIO: {
-        "enabled": True,
+        "enabled": False,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
@@ -124,7 +122,7 @@ data_control = {
         },
     },
     cm.Exchange.OKEX: {
-        "enabled": True,
+        "enabled": False,
         cm.enums.Interface.OHLCV: {
             "enabled": True,
             cm.InstrumentType.PERPETUAL: {
@@ -144,6 +142,7 @@ data_control = {
         },
     },
 }
+
 
 def pull_one_exchange(exchange_name, exchange_inst: ExchangeAPIBase):
     exchange_logger = logging.getLogger(f"cryptomart.{exchange_name}")
@@ -246,8 +245,6 @@ def pull_one_exchange(exchange_name, exchange_inst: ExchangeAPIBase):
 
 
 if __name__ == "__main__":
-
-    log_file = "logs/pull_all_data_2.log"
     mode = "parallel"
 
     client = cm.Client(

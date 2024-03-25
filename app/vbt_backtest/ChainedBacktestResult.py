@@ -4,13 +4,13 @@ from functools import cached_property
 import app
 import numpy as np
 import pandas as pd
-import pyutil
 import vectorbt as vbt
 from app import data_prep
 from app.feeds import Spread
 from IPython.display import display
 
 from .. import data_prep
+from ..util import BashFormatter
 from . import BacktestResult
 
 
@@ -307,7 +307,7 @@ class ChainedBacktestResult(BacktestResult):
         entry_fees = sum(t.entry_fees)
         exit_fees = sum(t.exit_fees)
 
-        formatter = pyutil.io.BashFormatter()
+        formatter = BashFormatter()
 
         def add_color(x: str, x_float: float):
             if x_float > 0:

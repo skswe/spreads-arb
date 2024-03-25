@@ -5,9 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 import cryptomart as cm
 import numpy as np
 import pandas as pd
-import pyutil
 from tqdm import tqdm
-
+from ..util import cached
 from ..data_prep import all_ohlcv, create_exchange_dataframe, get_cryptomart_data_iterator, get_fee_info
 from . import LazyDataFrameHolder, LazySpreadHolder, Trades
 
@@ -233,13 +232,13 @@ def load_spreads(price_signals):
 
 
 @log_function_call("Getting all trades_summary")
-@pyutil.cached("/tmp/cache/get_all_trades_summary")
+@cached("/tmp/cache/get_all_trades_summary")
 def get_all_trades_summary(spreads, **cache_kwargs):
     return spreads.progress_apply(lambda x: x.get_trades_summary())
 
 
 @log_function_call("Getting all trades")
-@pyutil.cached("/tmp/cache/get_all_trades")
+@cached("/tmp/cache/get_all_trades")
 def get_all_trades(spreads, **cache_kwargs):
     dfs = []
     for idx, row in tqdm(spreads.reset_index().iterrows(), total=len(spreads)):

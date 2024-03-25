@@ -5,7 +5,8 @@ import vectorbt as vbt
 import vectorbt.portfolio.enums as enums
 import vectorbt.portfolio.nb as nb
 from numba import njit
-from pyutil.dicts import format_dict
+
+from ..util import format_dict
 
 NONE = -999
 LONG = 1
@@ -173,7 +174,7 @@ def get_exit_orders(c, funding_debit, bt_args):
 def get_expected_profit(c, bt_args):
     if not bt_args.profitable_only:
         return 1
-    
+
     current_zscore = bt_args.zscore[c.i]
     current_prices = c.close[c.i]
     final_price = sum(c.close[c.i]) / 2
@@ -253,7 +254,7 @@ def pre_segment_func_nb(c, directions, spread_dir, funding_debit, call_seq_out, 
     liquidated = False
     entry_orders = (NO_ORDER, NO_ORDER)
     exit_orders = (NO_ORDER, NO_ORDER)
-    
+
     if c.last_cash == 0:
         # Ran out of cash
         pass

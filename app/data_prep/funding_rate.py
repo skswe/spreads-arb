@@ -2,14 +2,14 @@ import pickle
 
 import cryptomart as cm
 import pandas as pd
-import pyutil
+from ..util import cached
 
 from ..enums import Exchange
 from ..errors import NotSupportedError
 from ..globals import BLACKLISTED_SYMBOLS, STUDY_INST_TYPES
 
 
-@pyutil.cache.cached("/tmp/cache/all_funding_rates", refresh=False)
+@cached("/tmp/cache/all_funding_rates", refresh=False)
 def all_funding_rates(start, end, **cache_kwargs) -> pd.DataFrame:
     """Get the funding rate timeseries for all instruments"""
     cm_client = cm.Client(quiet=True)
