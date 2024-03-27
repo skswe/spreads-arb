@@ -3,7 +3,7 @@ import logging
 import dotenv
 from tqdm import tqdm
 
-from . import bq_util, data_prep, enums, errors, feeds, globals, pandas_backtest, plotting, vbt_backtest, util
+from . import data_prep, enums, errors, feeds, globals, pandas_backtest, plotting, vbt_backtest, util
 
 root_logger = logging.getLogger("app")
 root_logger.setLevel(logging.INFO)

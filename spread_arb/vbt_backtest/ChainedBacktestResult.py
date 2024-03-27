@@ -9,9 +9,9 @@ import pandas as pd
 import vectorbt as vbt
 from IPython.display import display
 
-import app
-from app import data_prep
-from app.feeds import Spread
+import spread_arb
+from spread_arb import data_prep
+from spread_arb.feeds import Spread
 
 from .. import data_prep
 from ..util import BashFormatter
@@ -23,7 +23,9 @@ def alternating(a, b, n):
 
 
 class ChainedBacktestResult(BacktestResult):
-    def __init__(self, portfolio: vbt.Portfolio, all_spreads: Spread, z_score_period: int = 30, price_col: str = "close"):
+    def __init__(
+        self, portfolio: vbt.Portfolio, all_spreads: Spread, z_score_period: int = 30, price_col: str = "close"
+    ):
         self.portfolio = portfolio
         self.all_spreads = all_spreads
         self.z_score_period = z_score_period
@@ -414,7 +416,7 @@ class ChainedBacktestResult(BacktestResult):
             fee_info = data_prep.get_fee_info(refresh=False, identifiers=[identifier])
             spreads = data_prep.create_spreads(ohlcvs, fee_info, bas=ba_spreads)
 
-            res = app.BacktestRunner(
+            res = spread_arb.BacktestRunner(
                 log_dir=None,
                 use_slippage=True,
                 use_funding_rate=False,
