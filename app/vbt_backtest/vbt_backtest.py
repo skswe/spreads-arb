@@ -1,3 +1,13 @@
+"""This module contains the numba backtest logic for the individual spread arbitrage strategy
+
+The strategy opens a position (with respect to the spread) when the spread z-score exceeds
+the provided threshold. The position is closed when the z-score crosses back through 0.
+
+The strategy accurately models market conditions such as trading fees, funding rate, margin, and slippage.
+
+Decisions can be filtered to only include (expected) profitable trades.
+"""
+
 from collections import namedtuple
 
 import numpy as np

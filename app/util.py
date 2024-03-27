@@ -1,3 +1,6 @@
+"""This module contains general utility functions.
+"""
+
 import datetime
 import functools
 import hashlib

@@ -1,11 +1,15 @@
+"""This module provides an API for analyzing individual spread backtest results. For
+chained backtest results see `ChainedBacktestResult`
+"""
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from ..util import BashFormatter
 import vectorbt as vbt
 from IPython.display import display
 
 from ..feeds import Spread
+from ..util import BashFormatter
 
 
 class BacktestResult:

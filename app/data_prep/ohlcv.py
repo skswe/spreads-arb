@@ -1,18 +1,31 @@
+"""This module contains a function to load ohlcv data
+"""
+
 import pickle
 
-import cryptomart as cm
 import pandas as pd
-from ..util import cached
+
+import cryptomart as cm
 
 from ..enums import Exchange
 from ..errors import NotSupportedError
 from ..globals import BLACKLISTED_SYMBOLS, STUDY_INST_TYPES
+from ..util import cached
 
 
 @cached("/tmp/cache/all_ohlcv", refresh=False)
 def all_ohlcv(start, end, interval, **cache_kwargs) -> pd.DataFrame:
-    """Get OHLCV for all instruments"""
-    cm_client = cm.Client(quiet=True)
+    """Get the OHLCV timeseries for all instruments
+
+    Args:
+        start: start time for desired timeseries
+        end: end time for desired timeseries
+        interval: interval for desired timeseries
+
+    Returns:
+        DataFrame with keys (exchange, inst_type, symbol) and column [ohlcv, rows, missing_rows, earliest_time, latest_time, gaps]
+    """
+    cm_client = cm.Client(quiet=True, instrument_cache_kwargs={"refresh": True})
     ohlcvs = pd.DataFrame(index=pd.MultiIndex.from_arrays([[], [], []], names=["exchange", "inst_type", "symbol"]))
 
     for exchange in Exchange:

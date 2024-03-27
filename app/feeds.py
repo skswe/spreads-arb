@@ -1,10 +1,14 @@
+"""This module contains classes for working with time series data.
+"""
+
 import datetime
 from typing import Dict, List, Tuple
 
-import cryptomart as cm
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+
+import cryptomart as cm
 from cryptomart.feeds import FundingRateFeed, OHLCVFeed, TSFeedBase
 
 from .enums import Exchange, InstrumentType, Interval, SpreadColumn
@@ -13,6 +17,8 @@ client = cm.Client(quiet=True)
 
 
 class QuotesFeed(TSFeedBase):
+    """Timeseries feed for quotes data. Contains columns [bid_price, ask_price, bid_amount, ask_amount, mid_price]."""
+
     _metadata = TSFeedBase._metadata + [
         "exchange_name",
         "symbol",
@@ -71,6 +77,8 @@ class QuotesFeed(TSFeedBase):
 
 
 class Spread(TSFeedBase):
+    """Timeseries feed for spread data"""
+
     _metadata = TSFeedBase._metadata + [
         "ohlcv_list",
         "funding_rate",
@@ -164,54 +172,33 @@ class Spread(TSFeedBase):
         obj.resample_to_days = lambda: obj.set_index(obj.time_column).resample("1d").last().reset_index()
         return obj
 
-    def add_bid_ask_spread(
-        self, bid_ask_spread_a: FundingRateFeed, bid_ask_spread_b: FundingRateFeed, fillna=True, type="sum"
-    ):
+    def add_bid_ask_spread(self, bid_ask_spread_a: FundingRateFeed, bid_ask_spread_b: FundingRateFeed):
         """Add bid ask spread feeds to underlying OHLCVFeeds"""
-        assert type in ["sum", "mean"]
+        bid_ask_spread_a = bid_ask_spread_a.resample(self.ohlcv_list[0].timedelta, on="date").median()
+        bid_ask_spread_b = bid_ask_spread_b.resample(self.ohlcv_list[1].timedelta, on="date").median()
 
-        if type == "mean":
-            bid_ask_spread_a = bid_ask_spread_a.resample(self.ohlcv_list[0].timedelta, on="date").median()
-            bid_ask_spread_b = bid_ask_spread_b.resample(self.ohlcv_list[1].timedelta, on="date").median()
+        self.ohlcv_list[0] = (
+            self.ohlcv_list[0]
+            .drop(columns="bid_ask_spread", errors="ignore")
+            .set_index(self.ohlcv_list[0].time_column)
+            .join(bid_ask_spread_a, how="left")
+            .reset_index()
+        )
+        self.ohlcv_list[1] = (
+            self.ohlcv_list[1]
+            .drop(columns="bid_ask_spread", errors="ignore")
+            .set_index(self.ohlcv_list[1].time_column)
+            .join(bid_ask_spread_b, how="left")
+            .reset_index()
+        )
 
-            self.ohlcv_list[0] = (
-                self.ohlcv_list[0]
-                .drop(columns="bid_ask_spread", errors="ignore")
-                .set_index(self.ohlcv_list[0].time_column)
-                .join(bid_ask_spread_a, how="left")
-                .reset_index()
+        for x in range(len(self.ohlcv_list)):
+            self.ohlcv_list[x].bid_ask_spread.fillna(
+                self.ohlcv_list[x].bid_ask_spread.expanding(1).mean(), inplace=True
             )
-            self.ohlcv_list[1] = (
-                self.ohlcv_list[1]
-                .drop(columns="bid_ask_spread", errors="ignore")
-                .set_index(self.ohlcv_list[1].time_column)
-                .join(bid_ask_spread_b, how="left")
-                .reset_index()
-            )
+            self.ohlcv_list[x].bid_ask_spread.fillna(self.ohlcv_list[x].bid_ask_spread.mean(), inplace=True)
 
-            if fillna:
-                for x in range(len(self.ohlcv_list)):
-                    self.ohlcv_list[x].bid_ask_spread.fillna(
-                        self.ohlcv_list[x].bid_ask_spread.expanding(1).mean(), inplace=True
-                    )
-                    self.ohlcv_list[x].bid_ask_spread.fillna(self.ohlcv_list[x].bid_ask_spread.mean(), inplace=True)
-        elif type == "sum":
-            self.ohlcv_list[0] = (
-                self.ohlcv_list[0]
-                .drop(columns=["bas", "bid_amount", "ask_amount"], errors="ignore")
-                .set_index(self.ohlcv_list[0].time_column)
-                .join(bid_ask_spread_a, how="left")
-                .reset_index()
-            )
-            self.ohlcv_list[1] = (
-                self.ohlcv_list[1]
-                .drop(columns=["bas", "bid_amount", "ask_amount"], errors="ignore")
-                .set_index(self.ohlcv_list[1].time_column)
-                .join(bid_ask_spread_b, how="left")
-                .reset_index()
-            )
-
-    def add_funding_rate(self, funding_rate_a: FundingRateFeed, funding_rate_b: FundingRateFeed, fillna=True):
+    def add_funding_rate(self, funding_rate_a: FundingRateFeed, funding_rate_b: FundingRateFeed):
         """Add funding rate feeds to underlying OHLCVFeeds"""
         funding_rate_a = funding_rate_a.resample(self.ohlcv_list[0].timedelta, on="timestamp").median()
         funding_rate_b = funding_rate_b.resample(self.ohlcv_list[1].timedelta, on="timestamp").median()
@@ -231,9 +218,8 @@ class Spread(TSFeedBase):
             .reset_index()
         )
 
-        if fillna:
-            self.ohlcv_list[0].funding_rate.fillna(self.ohlcv_list[0].funding_rate.expanding(1).mean(), inplace=True)
-            self.ohlcv_list[1].funding_rate.fillna(self.ohlcv_list[1].funding_rate.expanding(1).mean(), inplace=True)
+        self.ohlcv_list[0].funding_rate.fillna(self.ohlcv_list[0].funding_rate.expanding(1).mean(), inplace=True)
+        self.ohlcv_list[1].funding_rate.fillna(self.ohlcv_list[1].funding_rate.expanding(1).mean(), inplace=True)
 
     def returns(self, column=SpreadColumn.close):
         ohlcv_a, ohlcv_b = iter(self.ohlcv_list)

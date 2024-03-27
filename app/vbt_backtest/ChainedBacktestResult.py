@@ -1,13 +1,17 @@
+"""This module provides an API for analyzing chained spread backtest results
+"""
+
 import pickle
 from functools import cached_property
 
-import app
 import numpy as np
 import pandas as pd
 import vectorbt as vbt
+from IPython.display import display
+
+import app
 from app import data_prep
 from app.feeds import Spread
-from IPython.display import display
 
 from .. import data_prep
 from ..util import BashFormatter
@@ -19,10 +23,11 @@ def alternating(a, b, n):
 
 
 class ChainedBacktestResult(BacktestResult):
-    def __init__(self, portfolio: vbt.Portfolio, all_spreads: Spread, z_score_period: int = 30):
+    def __init__(self, portfolio: vbt.Portfolio, all_spreads: Spread, z_score_period: int = 30, price_col: str = "close"):
         self.portfolio = portfolio
         self.all_spreads = all_spreads
         self.z_score_period = z_score_period
+        self.price_col = price_col
 
     @cached_property
     def column_map(self) -> pd.DataFrame:
@@ -37,15 +42,15 @@ class ChainedBacktestResult(BacktestResult):
         return pd.DataFrame({"open_time": self.portfolio.cash().index, "time_idx": range(len(self.portfolio.cash()))})
 
     @cached_property
-    def close_prices(self) -> pd.DataFrame:
-        """Returns DataFrame with schema: [col, time_idx, close]"""
+    def prices(self) -> pd.DataFrame:
+        """Returns DataFrame with schema: [col, time_idx, self.price_col]"""
         df = pd.concat(
             [
                 pickle.loads(self.all_spreads.iloc[i].spread)
-                .underlying_col("close")
+                .underlying_col(self.price_col)
                 .droplevel(1, axis=1)
                 .set_axis([i, i + len(self.all_spreads)], axis=1)
-                .melt(var_name="col", value_name="close", ignore_index=False)
+                .melt(var_name="col", value_name=self.price_col, ignore_index=False)
                 .reset_index()
                 for i in range(len(self.all_spreads))
             ],
@@ -55,7 +60,7 @@ class ChainedBacktestResult(BacktestResult):
         df = df.drop(columns="open_time")
         df = df.sort_values(["col", "time_idx"])
         df = df.reset_index(drop=True)
-        df = df[["col", "time_idx", "close"]]
+        df = df[["col", "time_idx", self.price_col]]
         return df
 
     @cached_property
@@ -84,10 +89,10 @@ class ChainedBacktestResult(BacktestResult):
         """Returns DataFrame with schema [id, col, idx, size, filled_price, fees, side, type, price, zscore, slippage]"""
         df = self.portfolio.orders.records.sort_values(["idx", "id"])
         df = df.groupby("col").apply(lambda df: df.assign(type=alternating("entry", "exit", len(df))))
-        df = df.merge(self.close_prices, left_on=["col", "idx"], right_on=["col", "time_idx"])
+        df = df.merge(self.prices, left_on=["col", "idx"], right_on=["col", "time_idx"])
         df = df.merge(self.zscores)
         df = df.drop(columns="time_idx")
-        df = df.rename(columns={"price": "filled_price", "close": "price"})
+        df = df.rename(columns={"price": "filled_price", self.price_col: "price"})
         df["slippage"] = abs(df.filled_price - df.price) * df["size"]
 
         assert len(df) == len(self.portfolio.orders.records)

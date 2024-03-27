@@ -9,3 +9,6 @@ bigquery_cred.json
 logs/
 data/*
 *.ipynb
+archive
+cryptomart
+!notebooks/*.ipynb

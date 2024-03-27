@@ -1,3 +1,6 @@
+"""This module contains a class for downloading data from the tardis.dev crypto data provider
+"""
+
 import asyncio
 import logging
 import os

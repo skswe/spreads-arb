@@ -1,3 +1,6 @@
+"""This module contains functions to load bid_ask_spread and slippage data
+"""
+
 import pickle
 import warnings
 
@@ -11,7 +14,9 @@ from ..globals import BLACKLISTED_SYMBOLS, STUDY_INST_TYPES
 
 @cached("/tmp/cache/all_bid_ask_spreads", refresh=False)
 def all_bid_ask_spreads(start, end, **cache_kwargs) -> pd.DataFrame:
-    """Get the bid ask spread timeseries for all instruments in the Order Book data mart"""
+    """DEPRECATED - order book data was insufficient. Better to use preset slippages. See dummy_bid_ask_spreads().
+    
+    Get the bid ask spread timeseries for all instruments in the Order Book data mart"""
     cm_client = cm.Client(quiet=True)
     ba_spreads = pd.DataFrame(index=pd.MultiIndex.from_arrays([[], [], []], names=["exchange", "inst_type", "symbol"]))
 
@@ -27,6 +32,17 @@ def all_bid_ask_spreads(start, end, **cache_kwargs) -> pd.DataFrame:
 
 
 def dummy_bid_ask_spreads(ohlcvs, default_slippage=0.02, force_default=False):
+    """Loads bid ask spreads from a pickle file that contains the average bid ask spread for each symbol/exchange over a period of 4 months.
+        Computes `avg_slippage` as the average bid ask spread divided by the average close price.
+
+    Args:
+        ohlcvs: DataFrame containing OHLCV data to append the bid ask spreads to.
+        default_slippage: Fallback slippage if no value is present for the given symbol/exchange. Defaults to 0.02.
+        force_default: Forces all slippages to bet set to `default_slippage`. Defaults to False.
+
+    Returns:
+        DataFrame with [bid_ask_spread, avg_slippage] columns.
+    """
     old_slippages = pd.read_pickle("data/old_slippages.pkl")
     old_slippages_symbol = old_slippages.groupby(level="symbol").mean()
 

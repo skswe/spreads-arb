@@ -1,3 +1,6 @@
+"""This module provides an API for running spread backtests from the `vbt_backtest` module.
+"""
+
 import os
 import pickle
 from datetime import datetime
@@ -6,45 +9,39 @@ import numpy as np
 import pandas as pd
 
 from ..feeds import Spread
-from . import vbt_backtest, vbt_backtest_chained, vbt_bt_chained_acc_slip, vbt_bt_quotes
+from ..util import redirect_stdout
+from . import vbt_backtest, vbt_backtest_chained, vbt_bt_quotes
 from .BacktestResult import BacktestResult
 from .ChainedBacktestResult import ChainedBacktestResult
-from ..util import redirect_stdout
+
 
 class BacktestRunner:
+    # Default module
+    vbt_module = vbt_backtest
+    
     def __init__(
         self,
         initial_cash=150000,
         trade_value=10000,
-        vbt_module=vbt_backtest_chained,
         z_score_period=30,
         z_score_thresholds=(0, 1),  # (entry_threshold, exit_threshold)
         use_slippage=True,
-        slippage_type="sum",  # sum or mean
         use_funding_rate=True,
         profitable_only=True,  # Expected return on total trade size after fees and slippage
         log_dir=None,
         force_logging=False,
     ):
-        assert slippage_type in ["sum", "mean"]
-        if not use_slippage:
-            slippage_type = "mean"
-        else:
-            if slippage_type == "sum":
-                vbt_module = vbt_bt_chained_acc_slip
-
         self.initial_cash = initial_cash
         self.trade_value = trade_value
-        self.vbt_module = vbt_module
         self.z_score_period = z_score_period
         self.z_score_thresholds = z_score_thresholds
         self.use_slippage = use_slippage
-        self.slippage_type = slippage_type
         self.use_funding_rate = use_funding_rate
         self.profitable_only = profitable_only
 
         self.logging = force_logging or (log_dir is not None)
         if log_dir is not None:
+            print("Logging is enabled. Performance will be impacted.")
             self.log_dir = self.make_log_dir(log_dir)
 
     @staticmethod
@@ -65,8 +62,18 @@ class BacktestRunner:
             i += 1
         return f"{path}.log"
 
-    def create_spreads(self, ohlcvs, fee_info, funding_rates=None, bas=None, bas_type="sum") -> pd.DataFrame:
-        assert bas_type in ["sum", "mean"]
+    def create_spreads(self, ohlcvs, fee_info, funding_rates=None, bas=None) -> pd.DataFrame:
+        """Create spreads from OHLCV. ohlcvs with 0 rows should be filtered out before calling this function.
+
+        Args:
+            ohlcvs: DataFrame with OHLCV data.
+            fee_info: DataFrame with margin and fee information.
+            funding_rates: DataFrame with funding rate data. Defaults to None.
+            bas: DataFrame with bid ask spread and slippage data. Defaults to None.
+
+        Returns:
+            DataFrame with spread data
+        """
 
         instrument_data = ohlcvs.copy()
 
@@ -109,22 +116,17 @@ class BacktestRunner:
                 spread.add_funding_rate(fr_a, fr_b)
 
             if bas is not None:
-                if bas_type == "mean":
-                    bid_ask_a = pickle.loads(bas.at[indexer_a, "bid_ask_spread"])
-                    bid_ask_b = pickle.loads(bas.at[indexer_b, "bid_ask_spread"])
-                    spread.add_bid_ask_spread(bid_ask_a, bid_ask_b)
-                    spreads.at[indexer, (f"avg_ba_spread_{s}" for s in ("a", "b"))] = set(
-                        x.bid_ask_spread.mean() for x in (bid_ask_a, bid_ask_b)
-                    )
-                elif bas_type == "sum":
-                    bid_ask_a = pickle.loads(bas.at[indexer_a, "slippage"])
-                    bid_ask_b = pickle.loads(bas.at[indexer_b, "slippage"])
-                    spread.add_bid_ask_spread(bid_ask_a, bid_ask_b, type="sum")
+                bid_ask_a = pickle.loads(bas.at[indexer_a, "bid_ask_spread"])
+                bid_ask_b = pickle.loads(bas.at[indexer_b, "bid_ask_spread"])
+                spread.add_bid_ask_spread(bid_ask_a, bid_ask_b)
+                spreads.at[indexer, (f"avg_ba_spread_{s}" for s in ("a", "b"))] = set(
+                    x.bid_ask_spread.mean() for x in (bid_ask_a, bid_ask_b)
+                )
 
             spreads.at[indexer, "spread"] = pickle.dumps(spread)
-            spreads.at[
-                indexer, "alias"
-            ] = f"{row.exchange_a[:4]}_{row.exchange_b[:4]}_{row.inst_type_a[:4]}_{row.inst_type_b[:4]}_{row.symbol}"
+            spreads.at[indexer, "alias"] = (
+                f"{row.exchange_a[:4]}_{row.exchange_b[:4]}_{row.inst_type_a[:4]}_{row.inst_type_b[:4]}_{row.symbol}"
+            )
             spreads.at[indexer, "volatility"] = spread.volatility()
             spreads.at[indexer, "earliest_time"] = spread.earliest_time
             spreads.at[indexer, "latest_time"] = spread.latest_time
@@ -196,6 +198,18 @@ class BacktestRunner:
         return BacktestResult(res, spread)
 
     def run(self, spreads: pd.DataFrame, exchange_subset=[], inst_type_subset=["perpetual"], symbol_subset=[]):
+        """Run individual spread backtest for each of the given spreads 
+
+        Args:
+            spreads: DataFrame containing spread data. It should be created with the `create_spreads` method.
+            exchange_subset: Exchanges to filter the spreads by. Defaults to [].
+            inst_type_subset: Instrument Types to filter the spreads by. Defaults to ["perpetual"].
+            symbol_subset: Symbols to filter the spreads by. Defaults to [].
+
+        Returns:
+            DataFrame containing a `BacktestResult` object for each of the spreads.
+        """
+        self.vbt_module = vbt_backtest
         index_filter = pd.MultiIndex.from_product(
             [exchange_subset, exchange_subset, inst_type_subset, inst_type_subset, symbol_subset]
         )
@@ -206,6 +220,15 @@ class BacktestRunner:
         return results
 
     def run_chained(self, spreads: pd.DataFrame):
+        """Run the chained spread backtest for the given spreads
+
+        Args:
+            spreads: DataFrame containing spread data. It should be created with the `create_spreads` method.
+
+        Returns:
+            DataFrame containing a `ChainedBacktestResult` object for each of the spreads.
+        """
+        self.vbt_module = vbt_backtest_chained
         leg_0_close = np.array(
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("close").T.iloc[0], axis=1)
         )
@@ -228,22 +251,9 @@ class BacktestRunner:
                 spreads.apply(lambda s: np.zeros((2, len(pickle.loads(s.spread)))), axis=1), axis=1
             ).T
         else:
-            if self.slippage_type == "mean":
-                bid_ask_spread = np.stack(
-                    spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("bid_ask_spread").T, axis=1), axis=1
-                ).T
-            elif self.slippage_type == "sum":
-                bid_ask_spread = np.stack(
-                    spreads.apply(
-                        lambda s: pd.concat(
-                            [pickle.loads(s.spread).underlying_col(x) for x in ["bas", "bid_amount", "ask_amount"]],
-                            axis=1,
-                        ),
-                        axis=1,
-                    ),
-                    axis=1,
-                )
-                bid_ask_spread = np.nan_to_num(bid_ask_spread, nan=0)
+            bid_ask_spread = np.stack(
+                spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("bid_ask_spread").T, axis=1), axis=1
+            ).T
 
         zscore = np.array(
             spreads.apply(lambda s: pickle.loads(s.spread).zscore("close", self.z_score_period), axis=1)
@@ -296,6 +306,15 @@ class BacktestRunner:
         return ChainedBacktestResult(res, spreads)
 
     def run_quotes(self, spreads: pd.DataFrame):
+        """Run the chained quote spread backtest for the given spreads
+
+        Args:
+            spreads: DataFrame containing spread data. It should be created with the `create_spreads` method.
+
+        Returns:
+            None - check log file for results
+        """
+        self.vbt_module = vbt_bt_quotes
         leg_0_bid = np.array(
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("bid_price").T.iloc[0], axis=1)
         )
@@ -303,7 +322,6 @@ class BacktestRunner:
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("bid_price").T.iloc[1], axis=1)
         )
         bid_prices = np.concatenate([leg_0_bid, leg_1_bid], axis=0).T
-        bid_prices = np.vstack((np.full_like(bid_prices[:29], np.nan), bid_prices))
 
         leg_0_ask = np.array(
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("ask_price").T.iloc[0], axis=1)
@@ -312,7 +330,6 @@ class BacktestRunner:
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("ask_price").T.iloc[1], axis=1)
         )
         ask_prices = np.concatenate([leg_0_ask, leg_1_ask], axis=0).T
-        ask_prices = np.vstack((np.full_like(ask_prices[:29], np.nan), ask_prices))
 
         leg_0_bid_sz = np.array(
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("bid_amount").T.iloc[0], axis=1)
@@ -321,7 +338,6 @@ class BacktestRunner:
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("bid_amount").T.iloc[1], axis=1)
         )
         bid_sizes = np.concatenate([leg_0_bid_sz, leg_1_bid_sz], axis=0).T
-        bid_sizes = np.vstack((np.full_like(bid_sizes[:29], np.nan), bid_sizes))
 
         leg_0_ask_sz = np.array(
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("ask_amount").T.iloc[0], axis=1)
@@ -330,7 +346,6 @@ class BacktestRunner:
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("ask_amount").T.iloc[1], axis=1)
         )
         ask_sizes = np.concatenate([leg_0_ask_sz, leg_1_ask_sz], axis=0).T
-        ask_sizes = np.vstack((np.full_like(ask_sizes[:29], np.nan), ask_sizes))
 
         leg_0_mid = np.array(
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("mid_price").T.iloc[0], axis=1)
@@ -339,7 +354,6 @@ class BacktestRunner:
             spreads.apply(lambda s: pickle.loads(s.spread).underlying_col("mid_price").T.iloc[1], axis=1)
         )
         mid_prices = np.concatenate([leg_0_mid, leg_1_mid], axis=0).T
-        mid_prices = np.vstack((np.full_like(mid_prices[:29], np.nan), mid_prices))
 
         zscore = np.array(
             spreads.apply(lambda s: pickle.loads(s.spread).zscore("bid_price", self.z_score_period), axis=1)
@@ -375,20 +389,3 @@ class BacktestRunner:
         else:
             bt_func = self.vbt_module.run
         res = bt_func(mid_prices, bt_args)
-
-        col_0_names = np.array(
-            spreads.apply(
-                lambda s: pickle.loads(s.spread).underlying_col("bid_amount").columns.get_level_values(0)[0], axis=1
-            )
-        )
-        col_1_names = np.array(
-            spreads.apply(
-                lambda s: pickle.loads(s.spread).underlying_col("bid_amount").columns.get_level_values(0)[1], axis=1
-            )
-        )
-        col_names = np.concatenate([col_0_names, col_1_names], axis=0)
-        res = res.replace(
-            wrapper=res.wrapper.replace(index=pickle.loads(spreads.iloc[0].spread).time_only, columns=col_names)
-        )
-
-        return ChainedBacktestResult(res, spreads)

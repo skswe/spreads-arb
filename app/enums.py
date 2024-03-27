@@ -1,3 +1,6 @@
+"""This module contains enums for working with the cryptomart package.
+"""
+
 from cryptomart import enums as cm_enums
 
 

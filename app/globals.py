@@ -1,3 +1,4 @@
+"This module contains global constants and settings for the backtest"
 import logging
 
 from cryptomart.enums import InstrumentType
@@ -17,6 +18,7 @@ BLACKLISTED_SYMBOLS = [
     "MID",
     # These symbols have been exploited
     "LUNA",
+    "DASH",
 ]
 STUDY_START_DATE = (2022, 10, 10)
 STUDY_END_DATE = (2023, 5, 4)

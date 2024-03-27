@@ -1,4 +1,5 @@
-# Utilities for interacting with Google BigQuery
+"""DEPRECATED - This module contains utility functions for working with Google Cloud BigQuery.
+"""
 
 import logging
 import os

@@ -1,3 +1,16 @@
+"""This module contains the numba backtest logic for the chained quote spread arbitrage strategy
+
+The strategy opens a position (with respect to the spread) when the spread z-score exceeds
+the provided threshold. The position is closed when the z-score crosses back through 0.
+
+This strategy builds upon the `vbt_backtest_chained` module by trading on order book quotes rather 
+than price bars. Trading on order book quotes provides the most accurate simulation possible.
+
+At each time step, the strategy determines the most profitable spread to trade based on the expected profit of each spread.
+
+The strategy accurately models market conditions such as trading fees, funding rate, margin, and slippage.
+"""
+
 from collections import namedtuple
 
 import numpy as np

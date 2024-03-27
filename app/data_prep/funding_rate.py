@@ -1,3 +1,6 @@
+"""This module contains a function to load funding rate data
+"""
+
 import pickle
 
 import cryptomart as cm
@@ -11,7 +14,15 @@ from ..globals import BLACKLISTED_SYMBOLS, STUDY_INST_TYPES
 
 @cached("/tmp/cache/all_funding_rates", refresh=False)
 def all_funding_rates(start, end, **cache_kwargs) -> pd.DataFrame:
-    """Get the funding rate timeseries for all instruments"""
+    """Get the funding rate timeseries for all instruments
+
+    Args:
+        start: start time for desired timeseries
+        end: end time for desired timeseries
+
+    Returns:
+        DataFrame with keys (exchange, inst_type, symbol) and column [funding_rate]
+    """
     cm_client = cm.Client(quiet=True)
     funding_rates = pd.DataFrame(
         index=pd.MultiIndex.from_arrays([[], [], []], names=["exchange", "inst_type", "symbol"])

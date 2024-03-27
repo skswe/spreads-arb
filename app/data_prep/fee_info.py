@@ -1,14 +1,24 @@
+"""This module contains a function to load fee and margin data
+"""
+
 import os
 
-import cryptomart as cm
 import numpy as np
 import pandas as pd
-from ..util import cached
 import requests
+
+import cryptomart as cm
+
+from ..util import cached
 
 
 @cached("/tmp/cache/fee_margin_data", refresh=False)
 def get_fee_info(**cache_kwargs) -> pd.DataFrame:
+    """Get maintanace margin, initial margin, fee percentage and fixed fee for all exchanges. Falls back to the average of the other exchanges if data is missing.
+
+    Returns:
+        DataFrame with (exchange, symbol) index and [maint_margin, init_margin, fee_pct, fee_fixed] columns.
+    """
     cm_client = cm.Client(quiet=True)
 
     # BINANCE

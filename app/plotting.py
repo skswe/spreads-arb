@@ -1,3 +1,6 @@
+"""This module contains utility functions for plotting timeseries data using plotly.
+"""
+
 import logging
 from itertools import zip_longest
 from typing import Any, Dict, List, Optional, Union

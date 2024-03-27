@@ -1,3 +1,6 @@
+"""This module contains functions to pull exchange data (ohlcv and funding rate) in parallel.
+"""
+
 import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -145,6 +148,15 @@ data_control = {
 
 
 def pull_one_exchange(exchange_name, exchange_inst: ExchangeAPIBase):
+    """Pull data for one exchange. Used as a worker function for parallel execution.
+
+    Args:
+        exchange_name: Name of the exchange
+        exchange_inst: cryptomart exchange instance object
+
+    Returns:
+        dict containiner ohlcv and funding dataframes
+    """
     exchange_logger = logging.getLogger(f"cryptomart.{exchange_name}")
     log_file = unique_file_name(os.path.join(LOG_DIR, f"{exchange_name}.log"))
     exchange_logger.addHandler(logging.FileHandler(log_file))
