@@ -1,0 +1,12 @@
+ipython==8.12.3
+nest_asyncio==1.5.6
+numba==0.56.2
+numpy==1.23.1
+pandas==1.4.3
+plotly==5.10.0
+protobuf==5.26.1
+python-dotenv==1.0.1
+Requests==2.31.0
+tardis_dev==2.0.0a13
+tqdm==4.64.1
+vectorbt==0.24.0
