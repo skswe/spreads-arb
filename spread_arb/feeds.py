@@ -30,7 +30,6 @@ class QuotesFeed(TSFeedBase):
 
     @staticmethod
     def preprocess(df, start, end, freq):
-        df = df.reindex(pd.date_range(start, end, freq=freq)[:-1]).reset_index().rename(columns={"index": "timestamp"})
         df["mid_price"] = (df["bid_price"] + df["ask_price"]) / 2
         return df
 

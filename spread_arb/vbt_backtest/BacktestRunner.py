@@ -389,3 +389,4 @@ class BacktestRunner:
         else:
             bt_func = self.vbt_module.run
         res = bt_func(mid_prices, bt_args)
+        return res
